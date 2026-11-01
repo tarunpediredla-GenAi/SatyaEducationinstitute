@@ -1,0 +1,290 @@
+{
+  "entities": {
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted administrator membership record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 256 },
+        "grantedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User account profile with strict PII isolation and immutable role.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 256 },
+        "phone": { "type": "string", "minLength": 0, "maxLength": 30 },
+        "role": { "type": "string", "enum": ["student", "admin"], "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "email", "phone", "role", "createdAt", "updatedAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product and technology category.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "group": { "type": "string", "enum": ["technology", "books", "storybooks"], "maxLength": 30 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "slug", "description", "group", "active", "createdAt", "updatedAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Storefront catalog item representing a recorded course, educational book, or storybook.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "slug": { "type": "string", "minLength": 2, "maxLength": 160, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "type": { "type": "string", "enum": ["course", "book", "storybook"], "maxLength": 30 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "priceInr": { "type": "integer" },
+        "originalPriceInr": { "type": "integer" },
+        "language": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "format": { "type": "string", "enum": ["recorded_course", "digital_book", "physical_book", "hybrid_book"], "maxLength": 40 },
+        "stock": { "type": "integer" },
+        "featured": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["published", "draft", "archived"], "maxLength": 30 },
+        "authorOrInstructor": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "shortDescription": { "type": "string", "minLength": 5, "maxLength": 600 },
+        "description": { "type": "string", "minLength": 10, "maxLength": 4000 },
+        "coverType": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "level": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "duration": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "previewVideoUrl": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "title", "slug", "type", "category", "priceInr", "originalPriceInr",
+        "language", "format", "stock", "featured", "status", "authorOrInstructor",
+        "shortDescription", "description", "coverType", "level", "duration",
+        "previewVideoUrl", "createdAt", "updatedAt"
+      ]
+    },
+    "CourseDetails": {
+      "title": "CourseDetails",
+      "description": "Extended syllabus and curriculum metadata for a technology course.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "instructor": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "language": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "level": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "duration": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "introduction": { "type": "string", "minLength": 5, "maxLength": 3000 },
+        "syllabusSummary": { "type": "string", "minLength": 5, "maxLength": 4000 },
+        "status": { "type": "string", "enum": ["published", "draft", "archived"], "maxLength": 30 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "productId", "title", "instructor", "language", "level",
+        "duration", "introduction", "syllabusSummary", "status", "createdAt", "updatedAt"
+      ]
+    },
+    "Lesson": {
+      "title": "Lesson",
+      "description": "Individual module lesson inside a course with protected recording path.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "courseId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "moduleTitle": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "orderIndex": { "type": "integer" },
+        "durationMinutes": { "type": "integer" },
+        "isFreePreview": { "type": "boolean" },
+        "videoStoragePath": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "notes": { "type": "string", "minLength": 0, "maxLength": 3000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "courseId", "moduleTitle", "title", "orderIndex",
+        "durationMinutes", "isFreePreview", "videoStoragePath", "notes",
+        "createdAt", "updatedAt"
+      ]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer order with verified INR total, Cashfree reference, and shipment status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "customerEmail": { "type": "string", "minLength": 3, "maxLength": 256 },
+        "totalAmountInr": { "type": "integer" },
+        "paymentStatus": { "type": "string", "enum": ["pending", "paid", "failed", "cancelled", "refunded"], "maxLength": 30 },
+        "shipmentStatus": { "type": "string", "enum": ["not_applicable", "processing", "packed", "shipped", "delivered"], "maxLength": 30 },
+        "cashfreeOrderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "cashfreePaymentId": { "type": "string", "minLength": 0, "maxLength": 128 },
+        "hasPhysicalItems": { "type": "boolean" },
+        "shippingAddressSummary": { "type": "string", "minLength": 0, "maxLength": 600 },
+        "itemSummary": { "type": "string", "minLength": 2, "maxLength": 1500 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "userId", "customerName", "customerEmail", "totalAmountInr",
+        "paymentStatus", "shipmentStatus", "cashfreeOrderId", "cashfreePaymentId",
+        "hasPhysicalItems", "shippingAddressSummary", "itemSummary", "createdAt", "updatedAt"
+      ]
+    },
+    "Entitlement": {
+      "title": "Entitlement",
+      "description": "Verified access grant to a purchased course recording or digital book.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productType": { "type": "string", "enum": ["course", "book", "storybook"], "maxLength": 30 },
+        "orderId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "downloadPath": { "type": "string", "minLength": 0, "maxLength": 500 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "productId", "productType", "orderId", "downloadPath", "grantedAt"]
+    },
+    "LessonProgress": {
+      "title": "LessonProgress",
+      "description": "Saved playback progress and completion status for a student lesson.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "courseId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "lessonId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "completed": { "type": "boolean" },
+        "watchedSeconds": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "courseId", "lessonId", "completed", "watchedSeconds", "createdAt", "updatedAt"]
+    },
+    "WishlistItem": {
+      "title": "WishlistItem",
+      "description": "Saved wishlist item owned by a specific user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "productId", "createdAt"]
+    },
+    "DeliveryAddress": {
+      "title": "DeliveryAddress",
+      "description": "Physical book shipping address isolated to the owning user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "phone": { "type": "string", "minLength": 6, "maxLength": 30 },
+        "line1": { "type": "string", "minLength": 3, "maxLength": 200 },
+        "line2": { "type": "string", "minLength": 0, "maxLength": 200 },
+        "city": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "state": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "postalCode": { "type": "string", "minLength": 4, "maxLength": 20 },
+        "isDefault": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "userId", "fullName", "phone", "line1", "line2",
+        "city", "state", "postalCode", "isDefault", "createdAt", "updatedAt"
+      ]
+    },
+    "Banner": {
+      "title": "Banner",
+      "description": "Promotional homepage banner and offer announcement.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "subtitle": { "type": "string", "minLength": 2, "maxLength": 300 },
+        "ctaText": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "ctaLink": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "couponCode": { "type": "string", "minLength": 0, "maxLength": 40 },
+        "discountPercent": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "title", "subtitle", "ctaText", "ctaLink",
+        "couponCode", "discountPercent", "active", "createdAt", "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": "AdminRecord",
+      "description": "Trusted admin registry."
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles with PII isolation."
+    },
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Technology and book categories."
+    },
+    "/products/{productId}": {
+      "schema": "Product",
+      "description": "Storefront products (courses, educational books, storybooks)."
+    },
+    "/courses/{courseId}": {
+      "schema": "CourseDetails",
+      "description": "Course curriculum metadata."
+    },
+    "/lessons/{lessonId}": {
+      "schema": "Lesson",
+      "description": "Course lessons and recording storage paths."
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer orders and Cashfree payment statuses."
+    },
+    "/entitlements/{entitlementId}": {
+      "schema": "Entitlement",
+      "description": "Verified purchase entitlements for digital books and courses."
+    },
+    "/progress/{progressId}": {
+      "schema": "LessonProgress",
+      "description": "User video playback progress."
+    },
+    "/wishlists/{wishlistId}": {
+      "schema": "WishlistItem",
+      "description": "User wishlist items."
+    },
+    "/addresses/{addressId}": {
+      "schema": "DeliveryAddress",
+      "description": "User delivery addresses for physical books."
+    },
+    "/banners/{bannerId}": {
+      "schema": "Banner",
+      "description": "Homepage promotional banners."
+    }
+  }
+}
