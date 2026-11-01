@@ -2,5 +2,7 @@
   "name": "Satya’s Education — Courses, Technical Books & Storybooks",
   "description": "Full-stack education e-commerce storefront and learning platform for technology course recordings, engineering books, and children's storybooks with Firebase and Cashfree INR checkout.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
