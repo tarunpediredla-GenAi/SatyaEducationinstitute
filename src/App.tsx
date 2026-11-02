@@ -30,6 +30,7 @@ import {
   Send,
   Award,
   Zap,
+  Phone,
 } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, db, signOut } from './firebase';
