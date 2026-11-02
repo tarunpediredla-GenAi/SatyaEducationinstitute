@@ -168,16 +168,23 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header Bar */}
       <div className="bg-[#0A192F] text-white rounded-xl p-6 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <p className="text-xs font-mono-tabular text-[#D4AF37]">
-            STUDENT LEARNING DASHBOARD · ISOLATED USER DATA
-          </p>
-          <h1 className="font-display text-2xl font-bold mt-1">Welcome, {user.name}</h1>
-          <p className="text-xs text-slate-300 mt-1">
-            <span>{user.email}</span>
-            <span aria-hidden="true"> · </span>
-            <span>{user.emailVerified ? 'Email Verified' : 'Verification Pending'}</span>
-          </p>
+        <div className="flex items-center gap-4">
+          <img
+            src="/logo.png"
+            alt="Satya's Education Logo"
+            className="w-12 h-12 object-contain rounded-xl bg-white p-1 border border-white/20 shadow-xs shrink-0"
+          />
+          <div>
+            <p className="text-xs font-mono-tabular text-[#D4AF37]">
+              STUDENT LEARNING DASHBOARD · ISOLATED USER DATA
+            </p>
+            <h1 className="font-display text-2xl font-bold mt-1">Welcome, {user.name}</h1>
+            <p className="text-xs text-slate-300 mt-1">
+              <span>{user.email}</span>
+              <span aria-hidden="true"> · </span>
+              <span>{user.emailVerified ? 'Email Verified' : 'Verification Pending'}</span>
+            </p>
+          </div>
         </div>
         <button
           type="button"

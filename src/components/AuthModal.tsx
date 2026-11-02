@@ -252,10 +252,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <X className="w-5 h-5" />
         </button>
 
+        <div className="flex items-center gap-3 mb-4">
+          <img
+            src="/logo.png"
+            alt="Satya's Education Logo"
+            className="w-12 h-12 object-contain rounded-xl border border-slate-200 bg-white p-0.5 shadow-xs shrink-0"
+          />
+          <div>
+            <p className="text-xs font-mono-tabular font-bold tracking-wider text-[#B48A1E]">
+              SATYA’S EDUCATION
+            </p>
+            <p className="text-[11px] text-slate-500 font-medium">
+              Official Learning & Reading Portal
+            </p>
+          </div>
+        </div>
+
         <div className="mb-5">
-          <p className="text-xs font-mono-tabular text-[#B48A1E] mb-1">
-            SATYA’S EDUCATION ACCOUNT
-          </p>
           <h2 id="auth-modal-title" className="font-display text-2xl font-bold text-[#0A192F]">
             {mode === 'login'
               ? 'Sign in to Your Learning Portal'

@@ -519,9 +519,11 @@ export default function App() {
             }}
             className="flex items-center gap-3 whitespace-nowrap shrink-0 group focus:outline-none"
           >
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#0A192F] to-[#162D50] border border-[#D4AF37]/80 flex items-center justify-center text-[#D4AF37] font-display font-bold text-base shadow-sm group-hover:scale-105 transition-all">
-              SE
-            </div>
+            <img
+              src="/logo.png"
+              alt="Satya's Education Logo"
+              className="w-10 h-10 sm:w-11 sm:h-11 object-contain rounded-xl shadow-xs group-hover:scale-105 transition-all bg-white p-0.5 border border-slate-200"
+            />
             <div className="flex flex-col">
               <span className="font-display text-lg sm:text-xl font-bold tracking-tight text-[#0A192F] group-hover:text-[#112240] transition-colors leading-none">
                 Satya’s Education
@@ -1675,9 +1677,16 @@ export default function App() {
       <footer className="bg-[#071120] text-slate-300 border-t border-white/10 mt-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 grid grid-cols-1 md:grid-cols-4 gap-8 text-xs">
           <div className="space-y-3">
-            <span className="font-display text-lg font-bold text-white block">
-              {BUSINESS_COMPLIANCE_INFO.tradeName}
-            </span>
+            <div className="flex items-center gap-3">
+              <img
+                src="/logo.png"
+                alt="Satya's Education Logo"
+                className="w-10 h-10 object-contain rounded-xl bg-white p-0.5 border border-white/20 shadow-xs"
+              />
+              <span className="font-display text-lg font-bold text-white block">
+                {BUSINESS_COMPLIANCE_INFO.tradeName}
+              </span>
+            </div>
             <p className="text-slate-400 leading-relaxed">
               Operated by <strong>{BUSINESS_COMPLIANCE_INFO.legalName}</strong>. Structured software engineering
               courses, authoritative textbooks, and children’s STEM storybooks with secure Cashfree INR payments.

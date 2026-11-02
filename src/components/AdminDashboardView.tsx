@@ -203,17 +203,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Admin Top Header */}
       <div className="bg-[#0A192F] text-white rounded-xl p-6 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-mono-tabular text-[#D4AF37]">
-            <ShieldCheck className="w-4 h-4" />
-            <span>PROTECTED ADMIN CONSOLE · SERVER & FIRESTORE RBAC</span>
+        <div className="flex items-center gap-4">
+          <img
+            src="/logo.png"
+            alt="Satya's Education Logo"
+            className="w-12 h-12 object-contain rounded-xl bg-white p-1 border border-white/20 shadow-xs shrink-0"
+          />
+          <div>
+            <div className="flex items-center gap-2 text-xs font-mono-tabular text-[#D4AF37]">
+              <ShieldCheck className="w-4 h-4" />
+              <span>PROTECTED ADMIN CONSOLE · SERVER & FIRESTORE RBAC</span>
+            </div>
+            <h1 className="font-display text-xl sm:text-2xl font-bold mt-1">
+              Satya’s Education — Storefront & Curriculum Administration
+            </h1>
+            <p className="text-xs text-slate-300 mt-1">
+              Authenticated Admin: {user.email} · Custom Claim Verified
+            </p>
           </div>
-          <h1 className="font-display text-2xl font-bold mt-1">
-            Satya’s Education — Storefront & Curriculum Administration
-          </h1>
-          <p className="text-xs text-slate-300 mt-1">
-            Authenticated Admin: {user.email} · Custom Claim Verified
-          </p>
         </div>
       </div>
 
