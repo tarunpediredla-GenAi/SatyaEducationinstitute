@@ -203,9 +203,20 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
         }),
       });
 
-      const data = await response.json();
+      let data: any = null;
+      const text = await response.text();
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          text && text.length < 200 && !text.includes('<html')
+            ? text
+            : 'Payment service currently unavailable. Please verify that Cashfree environment variables are configured.'
+        );
+      }
+
       if (!response.ok) {
-        setCheckoutError(data.error || 'Could not create Cashfree order.');
+        setCheckoutError(data?.error || 'Could not create Cashfree order.');
         return;
       }
 
@@ -216,6 +227,37 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
         cashfreeMode: data.cashfreeMode,
         itemSummary: data.order.itemSummary,
       });
+
+      // Automatically launch Cashfree Web Checkout modal if official session is available
+      if (
+        data.paymentSessionId &&
+        !data.paymentSessionId.startsWith('cf_sandbox_session_') &&
+        typeof window !== 'undefined' &&
+        (window as any).Cashfree
+      ) {
+        try {
+          const cashfree = (window as any).Cashfree({
+            mode: data.cashfreeMode === 'production' ? 'production' : 'sandbox',
+          });
+          cashfree
+            .checkout({
+              paymentSessionId: data.paymentSessionId,
+              redirectTarget: '_modal',
+            })
+            .then((result: any) => {
+              if (result && result.error) {
+                setCheckoutError(
+                  result.error.message || 'Cashfree payment was cancelled or declined.'
+                );
+              } else {
+                // Verify order completion with server
+                handleCompleteCashfreeVerification('SUCCESS');
+              }
+            });
+        } catch (e) {
+          console.warn('Cashfree JS modal launch notice:', e);
+        }
+      }
     } catch (err) {
       setCheckoutError(
         err instanceof Error ? err.message : 'Network error creating Cashfree order.'
@@ -247,9 +289,20 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
         }),
       });
 
-      const data = await res.json();
+      let data: any = null;
+      const text = await res.text();
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          text && text.length < 200 && !text.includes('<html')
+            ? text
+            : 'Payment verification service error.'
+        );
+      }
+
       if (!res.ok) {
-        setCheckoutError(data.error || 'Payment verification failed.');
+        setCheckoutError(data?.error || 'Payment verification failed.');
         return;
       }
 
@@ -719,6 +772,38 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                 {activeCashfreeSession.itemSummary}
               </p>
             </div>
+
+            {!activeCashfreeSession.paymentSessionId.startsWith('cf_sandbox_session_') && (
+              <button
+                type="button"
+                disabled={checkoutLoading}
+                onClick={() => {
+                  if (typeof window !== 'undefined' && (window as any).Cashfree) {
+                    const cashfree = (window as any).Cashfree({
+                      mode:
+                        activeCashfreeSession.cashfreeMode === 'production'
+                          ? 'production'
+                          : 'sandbox',
+                    });
+                    cashfree
+                      .checkout({
+                        paymentSessionId: activeCashfreeSession.paymentSessionId,
+                        redirectTarget: '_modal',
+                      })
+                      .then((result: any) => {
+                        if (result && result.error) {
+                          setCheckoutError(result.error.message || 'Payment cancelled.');
+                        } else {
+                          handleCompleteCashfreeVerification('SUCCESS');
+                        }
+                      });
+                  }
+                }}
+                className="w-full py-3 px-4 bg-[#D4AF37] hover:bg-[#e0bc42] text-[#0A192F] text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm"
+              >
+                <span>Open Cashfree Gateway Popup (UPI / Card / NetBanking)</span>
+              </button>
+            )}
 
             <p className="text-xs text-slate-600 leading-relaxed">
               Select a payment outcome below to dispatch a signed Cashfree webhook (

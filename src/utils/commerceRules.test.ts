@@ -5,11 +5,13 @@ import {
   canUserAccessPrivateResource,
   canUserAccessProtectedContent,
   canUserPerformAdminOperation,
-  computeCashfreeWebhookSignature,
   evaluateOrderWebhookTransition,
-  verifyCashfreeWebhookSignature,
   type CatalogProduct,
 } from './commerceRules';
+import {
+  computeCashfreeWebhookSignature,
+  verifyCashfreeWebhookSignature,
+} from './serverCrypto';
 
 const sampleCatalog: Record<string, CatalogProduct> = {
   'course-python-mastery': {

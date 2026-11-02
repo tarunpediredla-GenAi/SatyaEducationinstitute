@@ -30,7 +30,7 @@ interface AdminDashboardViewProps {
   lessons: CourseLesson[];
   banners: PromotionalBanner[];
   onRefreshCatalog: () => Promise<void>;
-  onSwitchToAdminDemo: () => void;
+  onNavigateHome?: () => void;
 }
 
 export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
@@ -40,7 +40,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   lessons,
   banners,
   onRefreshCatalog,
-  onSwitchToAdminDemo,
+  onNavigateHome,
 }) => {
   const [activeTab, setActiveTab] = useState<
     'overview' | 'courses' | 'books' | 'categories' | 'orders' | 'customers' | 'banners'
@@ -144,10 +144,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           <div className="pt-2">
             <button
               type="button"
-              onClick={onSwitchToAdminDemo}
+              onClick={onNavigateHome ? onNavigateHome : () => { window.location.href = '#home'; }}
               className="px-5 py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 transition-colors"
             >
-              Switch to Verified Admin Session (tarunpediredla9966@gmail.com)
+              Return to Storefront
             </button>
           </div>
         </div>
@@ -198,16 +198,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       ])
     ).values()
   );
-
-  // Include active admin/student in directory if no orders yet
-  if (uniqueCustomers.length === 0) {
-    uniqueCustomers.push({
-      uid: 'student_ananya_uid_01',
-      name: 'Ananya Rao',
-      email: 'ananya.student@satyaedu.in',
-      ordersCount: 0,
-    });
-  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">

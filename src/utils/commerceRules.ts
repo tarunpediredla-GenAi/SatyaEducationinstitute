@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 
 export type ProductType = 'course' | 'book' | 'storybook';
 export type ProductFormat = 'recorded_course' | 'digital_book' | 'physical_book' | 'hybrid_book';
@@ -82,6 +81,28 @@ export interface AuthTokenContext {
 }
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'tarunpediredla9966@gmail.com';
+
+/**
+ * Single source of truth for payment gateway compliance, RBI merchant onboarding,
+ * legal entity information, and refund/cancellation guidelines.
+ */
+export const BUSINESS_COMPLIANCE_INFO = {
+  tradeName: "Satya's Education Institute",
+  legalName: "Pediredla Tarunraj",
+  operatedByStatement: "This website is operated by Satya's Education Institute (Legal Entity & Proprietor: Pediredla Tarunraj).",
+  registeredAddress: "D.No. 4-42, Satya Education Institute, Near IT SEZ, Madhurawada, Visakhapatnam, Andhra Pradesh 530048, India",
+  operationalAddress: "D.No. 4-42, Satya Education Institute, Near IT SEZ, Madhurawada, Visakhapatnam, Andhra Pradesh 530048, India",
+  supportEmail: "support@satyaeducation.in",
+  ownerEmail: "tarunpediredla9966@gmail.com",
+  supportPhone: "+91 98765 43210",
+  workingHours: "Monday to Saturday, 9:00 AM – 6:00 PM IST",
+  paymentGateway: "Cashfree Payments (PCI-DSS Certified, RBI Licensed Payment Aggregator)",
+  currency: "Indian Rupee (INR - ₹)",
+  returnDurationDays: 7,
+  cancellationDurationHours: 24,
+  refundTurnaroundDays: "5 to 7 business days",
+  refundMode: "Original Payment Source (Bank Account / UPI / Debit Card / Credit Card) via Cashfree",
+};
 const ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
 export function isValidDocumentId(id: unknown): id is string {
@@ -304,40 +325,6 @@ export function calculateVerifiedCartSummary(params: {
   };
 }
 
-/**
- * Official Cashfree PG v2023-08-01 Webhook Signature Verification.
- * Cashfree signs `timestamp + rawBody` using HMAC-SHA256 with the merchant's CASHFREE_SECRET_KEY
- * and encodes the digest in Base64.
- */
-export function computeCashfreeWebhookSignature(
-  timestamp: string,
-  rawBody: string,
-  secretKey: string
-): string {
-  return crypto
-    .createHmac('sha256', secretKey)
-    .update(`${timestamp}${rawBody}`)
-    .digest('base64');
-}
-
-export function verifyCashfreeWebhookSignature(params: {
-  timestampHeader: string | undefined;
-  signatureHeader: string | undefined;
-  rawBody: string;
-  secretKey: string;
-}): boolean {
-  const { timestampHeader, signatureHeader, rawBody, secretKey } = params;
-  if (!timestampHeader || !signatureHeader || !rawBody || !secretKey) {
-    return false;
-  }
-  const expected = computeCashfreeWebhookSignature(timestampHeader, rawBody, secretKey);
-  const expectedBuf = Buffer.from(expected, 'utf8');
-  const actualBuf = Buffer.from(signatureHeader, 'utf8');
-  if (expectedBuf.length !== actualBuf.length) {
-    return false;
-  }
-  return crypto.timingSafeEqual(expectedBuf, actualBuf);
-}
 
 export interface OrderStateRecord {
   id: string;

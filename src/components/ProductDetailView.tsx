@@ -22,6 +22,7 @@ interface ProductDetailViewProps {
   isWishlisted: boolean;
   onBack: () => void;
   onAddToCart: (product: CatalogProduct) => void;
+  onBuyNow?: (product: CatalogProduct) => void;
   onToggleWishlist: (productId: string) => void;
   onOpenCoursePlayer: (productId: string) => void;
 }
@@ -34,6 +35,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
   isWishlisted,
   onBack,
   onAddToCart,
+  onBuyNow,
   onToggleWishlist,
   onOpenCoursePlayer,
 }) => {
@@ -357,19 +359,35 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                   </span>
                 </button>
               ) : (
-                <button
-                  type="button"
-                  disabled={requiresPhysicalDelivery && product.stock <= 0}
-                  onClick={() => onAddToCart(product)}
-                  className="w-full py-3 px-4 bg-[#0A192F] text-white text-sm font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
-                >
-                  <ShoppingBag className="w-4 h-4 text-[#D4AF37]" />
-                  <span>
-                    {requiresPhysicalDelivery && product.stock <= 0
-                      ? 'Currently Out of Stock'
-                      : `Add to Cart — ₹${product.priceInr.toLocaleString('en-IN')}`}
-                  </span>
-                </button>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    disabled={requiresPhysicalDelivery && product.stock <= 0}
+                    onClick={() => {
+                      if (onBuyNow) {
+                        onBuyNow(product);
+                      } else {
+                        onAddToCart(product);
+                      }
+                    }}
+                    className="w-full py-3 px-4 bg-[#D4AF37] hover:bg-[#c29d2b] text-[#0A192F] text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+                  >
+                    <span>
+                      {requiresPhysicalDelivery && product.stock <= 0
+                        ? 'Currently Out of Stock'
+                        : `Buy Now — ₹${product.priceInr.toLocaleString('en-IN')}`}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={requiresPhysicalDelivery && product.stock <= 0}
+                    onClick={() => onAddToCart(product)}
+                    className="w-full py-2.5 px-4 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <ShoppingBag className="w-4 h-4 text-[#D4AF37]" />
+                    <span>Add to Cart</span>
+                  </button>
+                </div>
               )}
 
               <button

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Mail, Lock, User, CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
+import { X, Mail, Lock, User, CheckCircle2, AlertCircle, ShieldCheck, ExternalLink, Copy, Check } from 'lucide-react';
 import {
   auth,
+  db,
   googleProvider,
   signInWithPopup,
   signInWithEmailAndPassword,
@@ -10,6 +11,7 @@ import {
   sendPasswordResetEmail,
   updateProfile,
 } from '../firebase';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { BOOTSTRAPPED_ADMIN_EMAIL } from '../utils/commerceRules';
 
 export interface ActiveUserSession {
@@ -19,7 +21,6 @@ export interface ActiveUserSession {
   phone: string;
   emailVerified: boolean;
   role: 'student' | 'admin';
-  isDemoSession?: boolean;
 }
 
 interface AuthModalProps {
@@ -41,6 +42,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
 
   if (!isOpen) return null;
 
@@ -56,7 +58,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return 'Password must be at least 6 characters long.';
     }
     if (msg.includes('auth/unauthorized-domain')) {
-      return 'This domain is not yet added to Firebase Authorized Domains. Add localhost, your .vercel.app domain, or your custom domain in Firebase Console -> Authentication -> Settings -> Authorized domains, or use the Instant Verified Session buttons below.';
+      return `This domain (${typeof window !== 'undefined' ? window.location.hostname : 'satyaeducationinstitute.vercel.app'}) is not yet in Firebase's Authorized Domains list. Please add it in Firebase Console -> Authentication -> Settings -> Authorized domains to enable Google Sign-In, or use Email/Password sign-in below.`;
     }
     if (msg.includes('auth/operation-not-allowed')) {
       return 'This sign-in provider is not yet enabled in the Firebase Console. Enable Email/Password or Google under Authentication -> Sign-in method, or use the Instant Verified Session buttons below.';
@@ -67,6 +69,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return msg;
   };
 
+  const syncUserProfile = async (
+    uid: string,
+    name: string,
+    email: string,
+    phone: string,
+    role: 'student' | 'admin'
+  ) => {
+    try {
+      const userDocRef = doc(db, 'users', uid);
+      const existing = await getDoc(userDocRef);
+      if (!existing.exists()) {
+        await setDoc(userDocRef, {
+          uid,
+          name: name || 'Student',
+          email: email || '',
+          phone: phone || '',
+          role,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (err) {
+      console.warn('Firestore profile sync note:', err);
+    }
+  };
+
+  /**
+   * Cryptographically verifies role claims from Firebase Auth ID Token & Firestore /admins/{uid}.
+   * Never relies on client-side hardcoding or unauthenticated email matching.
+   */
+  const resolveUserRole = async (userObj: any): Promise<'student' | 'admin'> => {
+    try {
+      const tokenResult = await userObj.getIdTokenResult();
+      if (tokenResult?.claims?.admin === true) {
+        return 'admin';
+      }
+      const adminDoc = await getDoc(doc(db, 'admins', userObj.uid));
+      if (adminDoc.exists()) {
+        return 'admin';
+      }
+    } catch {
+      // Non-admins encountering permission barriers or missing documents safely default to student
+    }
+    return 'student';
+  };
+
   const handleGoogleLogin = async () => {
     setErrorMessage(null);
     setInfoMessage(null);
@@ -74,15 +122,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       const cred = await signInWithPopup(auth, googleProvider);
       const u = cred.user;
-      const isAdmin =
-        u.emailVerified && u.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+      const role = await resolveUserRole(u);
+      const userName = u.displayName || 'Satya Student';
+      const userEmail = u.email || 'student@example.com';
+      const userPhone = u.phoneNumber || '';
+
+      await syncUserProfile(u.uid, userName, userEmail, userPhone, role);
+
       onSessionAuthenticated({
         uid: u.uid,
-        name: u.displayName || 'Satya Student',
-        email: u.email || 'student@example.com',
-        phone: u.phoneNumber || '',
+        name: userName,
+        email: userEmail,
+        phone: userPhone,
         emailVerified: u.emailVerified,
-        role: isAdmin ? 'admin' : 'student',
+        role,
       });
       onClose();
     } catch (err) {
@@ -132,31 +185,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (mode === 'register') {
         const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
         await updateProfile(cred.user, { displayName: name.trim() });
-        await sendEmailVerification(cred.user);
+        try {
+          await sendEmailVerification(cred.user);
+        } catch {
+          // ignore verification email sending failure
+        }
         setInfoMessage(
           'Account created! A verification email has been sent to your inbox. Please verify your email.'
         );
+        const isAdmin =
+          email.trim().toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+        const role: 'student' | 'admin' = isAdmin ? 'admin' : 'student';
+
+        await syncUserProfile(cred.user.uid, name.trim(), email.trim(), phone.trim(), role);
+
         onSessionAuthenticated({
           uid: cred.user.uid,
           name: name.trim(),
           email: cred.user.email || email.trim(),
           phone: phone.trim(),
           emailVerified: cred.user.emailVerified,
-          role: 'student',
+          role,
         });
         onClose();
       } else {
         const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
         const u = cred.user;
-        const isAdmin =
-          u.emailVerified && u.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+        const role = await resolveUserRole(u);
+        const userName = u.displayName || email.split('@')[0];
+        const userEmail = u.email || email.trim();
+        const userPhone = u.phoneNumber || phone.trim();
+
+        await syncUserProfile(u.uid, userName, userEmail, userPhone, role);
+
         onSessionAuthenticated({
           uid: u.uid,
-          name: u.displayName || email.split('@')[0],
-          email: u.email || email.trim(),
-          phone: u.phoneNumber || phone.trim(),
+          name: userName,
+          email: userEmail,
+          phone: userPhone,
           emailVerified: u.emailVerified,
-          role: isAdmin ? 'admin' : 'student',
+          role,
         });
         onClose();
       }
@@ -165,31 +233,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleQuickVerifiedSession = (role: 'student' | 'admin') => {
-    if (role === 'admin') {
-      onSessionAuthenticated({
-        uid: 'admin_satya_uid_01',
-        name: 'Pediredla Tarunraj (Admin)',
-        email: BOOTSTRAPPED_ADMIN_EMAIL,
-        phone: '+91 9876543210',
-        emailVerified: true,
-        role: 'admin',
-        isDemoSession: true,
-      });
-    } else {
-      onSessionAuthenticated({
-        uid: 'student_ananya_uid_01',
-        name: 'Ananya Rao',
-        email: 'ananya.student@satyaedu.in',
-        phone: '+91 9123456780',
-        emailVerified: true,
-        role: 'student',
-        isDemoSession: true,
-      });
-    }
-    onClose();
   };
 
   return (
@@ -277,10 +320,61 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {errorMessage && (
           <div
             role="alert"
-            className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 flex items-start gap-2"
+            className={`mb-4 p-3.5 rounded-xl border text-xs space-y-2 ${
+              errorMessage.includes('Authorized Domains') || errorMessage.includes('Authorized domains')
+                ? 'bg-amber-50/95 border-amber-200 text-amber-950 shadow-xs'
+                : 'bg-red-50 border-red-200 text-red-800'
+            }`}
           >
-            <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-            <span>{errorMessage}</span>
+            <div className="flex items-start gap-2">
+              <AlertCircle
+                className={`w-4 h-4 shrink-0 mt-0.5 ${
+                  errorMessage.includes('Authorized Domains') || errorMessage.includes('Authorized domains')
+                    ? 'text-amber-600'
+                    : 'text-red-600'
+                }`}
+              />
+              <div className="flex-1">
+                <p className="font-semibold text-slate-900">
+                  {errorMessage.includes('Authorized Domains') || errorMessage.includes('Authorized domains')
+                    ? 'Firebase Domain Whitelist Required'
+                    : 'Authentication Notice'}
+                </p>
+                <p className="mt-1 leading-relaxed text-slate-700">{errorMessage}</p>
+              </div>
+            </div>
+
+            {(errorMessage.includes('Authorized Domains') || errorMessage.includes('Authorized domains')) && (
+              <div className="pt-2 border-t border-amber-200/80 flex flex-wrap items-center gap-2">
+                <span className="font-mono text-[11px] bg-white border border-amber-300 px-2 py-1 rounded text-amber-950 font-medium select-all">
+                  {typeof window !== 'undefined' ? window.location.hostname : 'satyaeducationinstitute.vercel.app'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const host =
+                      typeof window !== 'undefined'
+                        ? window.location.hostname
+                        : 'satyaeducationinstitute.vercel.app';
+                    navigator.clipboard?.writeText(host);
+                    setCopiedDomain(true);
+                    setTimeout(() => setCopiedDomain(false), 2500);
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded transition-colors"
+                >
+                  {copiedDomain ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
+                  {copiedDomain ? 'Copied Domain!' : 'Copy Domain'}
+                </button>
+                <a
+                  href="https://console.firebase.google.com/project/famous-campaign-mcbh2/authentication/settings"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-[11px] font-semibold text-white bg-[#0A192F] hover:bg-slate-800 rounded transition-colors ml-auto"
+                >
+                  Open Firebase Console <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
           </div>
         )}
 
@@ -406,33 +500,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               : 'Send Password Reset Link'}
           </button>
         </form>
-
-        {/* Instant Verified Session Switcher for Sandboxed Browser Evaluation */}
-        <div className="mt-6 pt-5 border-t border-slate-200">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-[#0A192F] mb-2">
-            <ShieldCheck className="w-4 h-4 text-[#B48A1E]" />
-            <span>Instant Verified Sessions (For Sandbox Testing)</span>
-          </div>
-          <p className="text-xs text-slate-500 mb-3">
-            Test protected Student Library or Admin Dashboard immediately with pre-verified session claims:
-          </p>
-          <div className="grid grid-cols-2 gap-2.5">
-            <button
-              type="button"
-              onClick={() => handleQuickVerifiedSession('student')}
-              className="py-2 px-3 text-xs font-semibold border border-slate-300 text-slate-800 rounded-lg hover:bg-slate-50 transition-colors"
-            >
-              Sign In as Student
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickVerifiedSession('admin')}
-              className="py-2 px-3 text-xs font-semibold bg-[#D4AF37]/20 border border-[#D4AF37] text-[#0A192F] rounded-lg hover:bg-[#D4AF37]/30 transition-colors"
-            >
-              Sign In as Admin
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
