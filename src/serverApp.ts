@@ -2,8 +2,6 @@ import express from 'express';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
-import { initializeApp as initializeAdminApp, cert, getApps } from 'firebase-admin/app';
-import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import {
   calculateVerifiedCartSummary,
   canUserAccessProtectedContent,
@@ -29,36 +27,49 @@ import {
   type PromotionalBanner,
 } from './data/sampleCatalog';
 
-dotenv.config();
-
-// Initialize Firebase Admin SDK on the server when real service account credentials are provided
-let adminAppInitialized = false;
-try {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
-
-  if (
-    projectId &&
-    clientEmail &&
-    rawPrivateKey &&
-    projectId !== 'your-project-id' &&
-    !rawPrivateKey.includes('YOUR_PRIVATE_KEY_HERE')
-  ) {
-    if (getApps().length === 0) {
-      initializeAdminApp({
-        credential: cert({
-          projectId,
-          clientEmail,
-          privateKey: rawPrivateKey.replace(/\\n/g, '\n'),
-        }),
-        storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-      });
-    }
-    adminAppInitialized = true;
+if (!process.env.VERCEL) {
+  try {
+    dotenv.config();
+  } catch {
+    // Environment variables already available in serverless runtime
   }
-} catch {
-  adminAppInitialized = false;
+}
+
+// Dynamically and safely initialize Firebase Admin SDK when real service account credentials are provided
+let adminAppInitialized = false;
+async function ensureAdminAppInitialized(): Promise<boolean> {
+  if (adminAppInitialized) return true;
+  try {
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+    if (
+      projectId &&
+      clientEmail &&
+      rawPrivateKey &&
+      projectId !== 'your-project-id' &&
+      !rawPrivateKey.includes('YOUR_PRIVATE_KEY_HERE') &&
+      rawPrivateKey.includes('BEGIN PRIVATE KEY')
+    ) {
+      const { initializeApp: initializeAdminApp, cert, getApps } = await import('firebase-admin/app');
+      if (getApps().length === 0) {
+        initializeAdminApp({
+          credential: cert({
+            projectId,
+            clientEmail,
+            privateKey: rawPrivateKey.replace(/\\n/g, '\n'),
+          }),
+          storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+        });
+      }
+      adminAppInitialized = true;
+      return true;
+    }
+  } catch {
+    adminAppInitialized = false;
+  }
+  return false;
 }
 
 // Server-side authoritative state store (synchronized with Firestore client/admin operations)
@@ -116,19 +127,23 @@ async function resolveServerAuthContext(req: express.Request): Promise<AuthToken
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const idToken = authHeader.slice('Bearer '.length).trim();
-    if (adminAppInitialized && idToken) {
-      try {
-        const decoded = await getAdminAuth().verifyIdToken(idToken);
-        return {
-          uid: decoded.uid,
-          email: decoded.email,
-          emailVerified: decoded.email_verified,
-          customClaims: {
-            admin: Boolean(decoded.admin),
-          },
-        };
-      } catch {
-        // Fall through to decoded JWT payload check in container preview
+    if (idToken) {
+      const isReady = await ensureAdminAppInitialized();
+      if (isReady) {
+        try {
+          const { getAuth: getAdminAuth } = await import('firebase-admin/auth');
+          const decoded = await getAdminAuth().verifyIdToken(idToken);
+          return {
+            uid: decoded.uid,
+            email: decoded.email,
+            emailVerified: decoded.email_verified,
+            customClaims: {
+              admin: Boolean(decoded.admin),
+            },
+          };
+        } catch {
+          // Fall through to decoded JWT payload check in container preview
+        }
       }
     }
     // Decode Firebase JWT payload in container preview when Admin cert is not injected
@@ -257,6 +272,14 @@ export function createApiApp() {
 
   // Normalize URL prefix when invoked inside Vercel Serverless Functions rewrite
   app.use((req, _res, next) => {
+    const forwardedUri = req.headers['x-forwarded-uri'] || req.headers['x-matched-path'];
+    if (typeof forwardedUri === 'string' && forwardedUri.startsWith('/api/')) {
+      req.url = forwardedUri;
+    } else if (req.url.startsWith('/api/index.js')) {
+      const rest = req.url.slice('/api/index.js'.length);
+      req.url = `/api${rest.startsWith('/') ? '' : '/'}${rest}`;
+    }
+
     if (
       process.env.VERCEL &&
       !req.url.startsWith('/api/') &&

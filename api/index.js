@@ -2,8 +2,6 @@
 import express from "express";
 import crypto2 from "node:crypto";
 import dotenv from "dotenv";
-import { initializeApp as initializeAdminApp, cert, getApps } from "firebase-admin/app";
-import { getAuth as getAdminAuth } from "firebase-admin/auth";
 
 // src/utils/commerceRules.ts
 var BOOTSTRAPPED_ADMIN_EMAIL = "tarunpediredla9966@gmail.com";
@@ -680,27 +678,38 @@ var INITIAL_LESSONS = [
 ];
 
 // src/serverApp.ts
-dotenv.config();
-var adminAppInitialized = false;
-try {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
-  if (projectId && clientEmail && rawPrivateKey && projectId !== "your-project-id" && !rawPrivateKey.includes("YOUR_PRIVATE_KEY_HERE")) {
-    if (getApps().length === 0) {
-      initializeAdminApp({
-        credential: cert({
-          projectId,
-          clientEmail,
-          privateKey: rawPrivateKey.replace(/\\n/g, "\n")
-        }),
-        storageBucket: process.env.FIREBASE_STORAGE_BUCKET
-      });
-    }
-    adminAppInitialized = true;
+if (!process.env.VERCEL) {
+  try {
+    dotenv.config();
+  } catch {
   }
-} catch {
-  adminAppInitialized = false;
+}
+var adminAppInitialized = false;
+async function ensureAdminAppInitialized() {
+  if (adminAppInitialized) return true;
+  try {
+    const projectId = process.env.FIREBASE_PROJECT_ID;
+    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+    const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
+    if (projectId && clientEmail && rawPrivateKey && projectId !== "your-project-id" && !rawPrivateKey.includes("YOUR_PRIVATE_KEY_HERE") && rawPrivateKey.includes("BEGIN PRIVATE KEY")) {
+      const { initializeApp: initializeAdminApp, cert, getApps } = await import("firebase-admin/app");
+      if (getApps().length === 0) {
+        initializeAdminApp({
+          credential: cert({
+            projectId,
+            clientEmail,
+            privateKey: rawPrivateKey.replace(/\\n/g, "\n")
+          }),
+          storageBucket: process.env.FIREBASE_STORAGE_BUCKET
+        });
+      }
+      adminAppInitialized = true;
+      return true;
+    }
+  } catch {
+    adminAppInitialized = false;
+  }
+  return false;
 }
 var serverProducts = new Map(
   INITIAL_PRODUCTS.map((p) => [p.id, { ...p }])
@@ -723,18 +732,22 @@ async function resolveServerAuthContext(req) {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const idToken = authHeader.slice("Bearer ".length).trim();
-    if (adminAppInitialized && idToken) {
-      try {
-        const decoded = await getAdminAuth().verifyIdToken(idToken);
-        return {
-          uid: decoded.uid,
-          email: decoded.email,
-          emailVerified: decoded.email_verified,
-          customClaims: {
-            admin: Boolean(decoded.admin)
-          }
-        };
-      } catch {
+    if (idToken) {
+      const isReady = await ensureAdminAppInitialized();
+      if (isReady) {
+        try {
+          const { getAuth: getAdminAuth } = await import("firebase-admin/auth");
+          const decoded = await getAdminAuth().verifyIdToken(idToken);
+          return {
+            uid: decoded.uid,
+            email: decoded.email,
+            emailVerified: decoded.email_verified,
+            customClaims: {
+              admin: Boolean(decoded.admin)
+            }
+          };
+        } catch {
+        }
       }
     }
     try {
@@ -836,6 +849,13 @@ function fulfillVerifiedPaidOrder(order, cashfreePaymentId) {
 function createApiApp() {
   const app2 = express();
   app2.use((req, _res, next) => {
+    const forwardedUri = req.headers["x-forwarded-uri"] || req.headers["x-matched-path"];
+    if (typeof forwardedUri === "string" && forwardedUri.startsWith("/api/")) {
+      req.url = forwardedUri;
+    } else if (req.url.startsWith("/api/index.js")) {
+      const rest = req.url.slice("/api/index.js".length);
+      req.url = `/api${rest.startsWith("/") ? "" : "/"}${rest}`;
+    }
     if (process.env.VERCEL && !req.url.startsWith("/api/") && req.url !== "/api") {
       req.url = `/api${req.url.startsWith("/") ? "" : "/"}${req.url}`;
     }
