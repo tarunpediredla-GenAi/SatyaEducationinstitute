@@ -183,6 +183,12 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
       }
     }
 
+    const checkoutPhone = (resolvedAddress?.phone || user.phone || '').replace(/[^0-9]/g, '').slice(-10);
+    if (!/^[6-9][0-9]{9}$/.test(checkoutPhone) || checkoutPhone === '9876543210') {
+      setCheckoutError('Please add your real 10-digit Indian mobile number in your profile or delivery address before paying.');
+      return;
+    }
+
     setCheckoutLoading(true);
     try {
       const authHeaders = await getClientAuthHeaders(user);
@@ -198,7 +204,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
           shippingAddress: resolvedAddress,
           customerName: user.name,
           customerEmail: user.email,
-          customerPhone: resolvedAddress?.phone || user.phone || '9876543210',
+          customerPhone: checkoutPhone,
         }),
       });
 
