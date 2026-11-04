@@ -119,8 +119,7 @@ export interface ServerEntitlementRecord {
   grantedAt: string;
 }
 
-const serverOrders = new Map<string, ServerOrderRecord>();
-const serverEntitlements = new Map<string, ServerEntitlementRecord>();
+// Payment orders and access grants are stored in Firestore, never process memory.
 
 /**
  * Never trust unsigned JWT payloads, client-supplied uid/role fields, or custom
@@ -465,7 +464,7 @@ export function createApiApp() {
       .join(' · ');
 
     const providedPhone = String(customerPhone || shippingAddress?.phone || '').replace(/[^0-9]/g, '').slice(-10);
-    if (!/^[6-9][0-9]{9}$/.test(providedPhone)) {
+    if (!/^[6-9][0-9]{9}$/.test(providedPhone) || providedPhone === '9876543210') {
       res.status(400).json({error:'Please enter a valid 10-digit Indian mobile number before paying.'});
       return;
     }
@@ -516,6 +515,11 @@ export function createApiApp() {
       cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production'
         ? 'production' : 'sandbox';
     const isTestKey = cfAppId.startsWith('TEST') || cfSecret.includes('_test_');
+
+    if (process.env.VERCEL_ENV === 'preview' && cfEnv === 'production') {
+      res.status(503).json({error:'Live Cashfree checkout is blocked on preview deployments. Configure sandbox credentials for testing.'});
+      return;
+    }
 
     if (cfEnv === 'production') {
       if (isTestKey) {
