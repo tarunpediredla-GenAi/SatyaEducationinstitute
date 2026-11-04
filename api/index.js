@@ -1147,21 +1147,17 @@ function createApiApp() {
         } else {
           const errData = await cfRes.json().catch(() => ({}));
           console.error("Cashfree PG Order Creation Failed:", cfRes.status, errData);
-          if (cfEnv === "production") {
-            res.status(400).json({
-              error: `Cashfree Live Gateway Error: ${errData?.message || `Status ${cfRes.status}. Please check your Live API credentials in Cashfree Dashboard.`}`
-            });
-            return;
-          }
-        }
-      } catch (err) {
-        console.error("Cashfree API invocation error:", err);
-        if (cfEnv === "production") {
-          res.status(502).json({
-            error: "Failed to contact Cashfree live payment servers. Please try again in a few moments."
+          res.status(400).json({
+            error: `Cashfree (${cfEnv.toUpperCase()}) Gateway Error: ${errData?.message || `Status ${cfRes.status}. Please check your API credentials.`}`
           });
           return;
         }
+      } catch (err) {
+        console.error("Cashfree API invocation error:", err);
+        res.status(502).json({
+          error: `Failed to contact Cashfree payment servers: ${err instanceof Error ? err.message : String(err)}`
+        });
+        return;
       }
     }
     if (process.env.VERCEL || process.env.NODE_ENV === "production") {
