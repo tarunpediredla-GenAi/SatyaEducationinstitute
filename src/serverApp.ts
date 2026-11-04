@@ -156,7 +156,7 @@ async function resolveServerAuthContext(req: express.Request): Promise<AuthToken
 }
 
 function getCashfreeSecretKey(): string {
-  return process.env.CASHFREE_SECRET_KEY || 'cf_sandbox_secret_satya_edu_2026';
+  return process.env.CASHFREE_SECRET_KEY || '';
 }
 
 function getActiveCouponsMap(): Record<string, number> {
@@ -541,6 +541,11 @@ export function createApiApp() {
     // If simulatedOutcome is provided in Sandbox Checkout Modal, dispatch through the real
     // HMAC-SHA256 webhook verification logic so the exact cryptographic verification path runs
     if (simulatedOutcome) {
+      // Never accept simulated payment success on a deployed website.
+      if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+        res.status(403).json({ error: 'Simulated payment outcomes are disabled in production.' });
+        return;
+      }
       const outcomeStatus =
         simulatedOutcome === 'SUCCESS'
           ? 'SUCCESS'
