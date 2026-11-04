@@ -337,100 +337,53 @@ export function createApiApp() {
   // CRITICAL: Cashfree Webhook route MUST read raw request body BEFORE express.json()
   app.post(
     '/api/cashfree/webhook',
-    express.raw({ type: 'application/json' }),
-    (req, res) => {
+    express.raw({ type: 'application/json', limit: '1mb' }),
+    async (req, res) => {
       const signatureHeader = req.headers['x-webhook-signature'] as string | undefined;
       const timestampHeader = req.headers['x-webhook-timestamp'] as string | undefined;
-      const rawBody = Buffer.isBuffer(req.body)
-        ? req.body.toString('utf8')
-        : typeof req.body === 'string'
-        ? req.body
-        : JSON.stringify(req.body || {});
-
-      const secretKey = getCashfreeSecretKey();
-      const isValidSig = verifyCashfreeWebhookSignature({
-        timestampHeader,
-        signatureHeader,
-        rawBody,
-        secretKey,
-      });
-
-      if (!isValidSig) {
-        // Acknowledge Cashfree dashboard verification/test pings without live signatures
-        const isDashboardTest =
-          !signatureHeader ||
-          !timestampHeader ||
-          !secretKey ||
-          rawBody === '' ||
-          rawBody === '{}' ||
-          rawBody.toLowerCase().includes('test') ||
-          rawBody.toLowerCase().includes('ping');
-
-        if (isDashboardTest) {
-          res.status(200).json({
-            status: 'ok',
-            message: 'Cashfree webhook test ping acknowledged successfully.',
-          });
-          return;
-        }
-
-        res.status(401).json({
-          error: 'Invalid Cashfree webhook HMAC-SHA256 signature.',
-        });
+      if (!Buffer.isBuffer(req.body) ||
+          !verifyCashfreeWebhookSignature({
+            timestampHeader, signatureHeader, rawBody: req.body.toString('utf8'),
+            secretKey: getCashfreeSecretKey(),
+          })) {
+        res.status(401).json({error: 'Invalid Cashfree webhook signature.'});
         return;
       }
-
       try {
-        const payload = JSON.parse(rawBody);
-        const cfOrderId = payload?.data?.order?.order_id;
-        const paymentStatusRaw = payload?.data?.payment?.payment_status || 'PENDING';
-        const paymentAmount = Number(payload?.data?.payment?.payment_amount || 0);
-        const cfPaymentId = String(payload?.data?.payment?.cf_payment_id || `cf_pay_${Date.now()}`);
-
-        const order = serverOrders.get(cfOrderId);
+        const payload = JSON.parse(req.body.toString('utf8'));
+        const orderId = String(payload?.data?.order?.order_id || '');
+        const status = String(payload?.data?.payment?.payment_status || '');
+        const amount = Number(payload?.data?.payment?.payment_amount);
+        const currency = String(payload?.data?.payment?.payment_currency || payload?.data?.order?.order_currency || '');
+        const paymentId = String(payload?.data?.payment?.cf_payment_id || '');
+        const order = await loadStoredOrder(orderId);
         if (!order) {
-          res.status(404).json({ error: `Order ${cfOrderId} not found.` });
+          // Let Cashfree retry if order persistence is temporarily unavailable.
+          res.status(404).json({error:'Order not found.'});
           return;
         }
-
-        if (paymentStatusRaw === 'SUCCESS') {
-          const result = fulfillVerifiedPaidOrder(order, cfPaymentId);
-          res.status(200).json({
-            status: 'ok',
-            orderId: order.id,
-            paymentStatus: order.paymentStatus,
-            alreadyProcessed: result.alreadyProcessed,
-            entitlementsGrantedCount: result.entitlementsGranted.length,
-          });
+        if (status === 'SUCCESS') {
+          if (currency !== 'INR' || !Number.isFinite(amount) ||
+              Math.abs(amount - order.totalAmountInr) >= 0.005 || !paymentId) {
+            res.status(400).json({error:'Payment amount, currency, or ID mismatch.'});
+            return;
+          }
+          const verifiedPaymentId = await fetchVerifiedCashfreePayment(order);
+          if (!verifiedPaymentId || verifiedPaymentId !== paymentId) {
+            res.status(503).json({error:'Cashfree has not confirmed this payment.'});
+            return;
+          }
+          const result = await fulfillVerifiedPaidOrder(order, verifiedPaymentId);
+          res.json({status:'ok', orderId:order.id, paid:true, alreadyProcessed:result.alreadyProcessed});
           return;
         }
-
-        const transition = evaluateOrderWebhookTransition({
-          order,
-          cashfreePaymentStatus: paymentStatusRaw,
-          paidAmountInr: paymentAmount,
-          cashfreePaymentId: cfPaymentId,
-        });
-
-        if (transition.shouldUpdateOrder) {
-          order.paymentStatus = transition.nextPaymentStatus;
-          order.shipmentStatus = transition.nextShipmentStatus;
-          order.cashfreePaymentId = cfPaymentId;
-          order.updatedAt = new Date().toISOString();
-          serverOrders.set(order.id, order);
+        if (status === 'FAILED' || status === 'USER_DROPPED') {
+          await recordUnsuccessfulPayment(order, status, amount, paymentId);
         }
-
-        res.status(200).json({
-          status: 'ok',
-          orderId: order.id,
-          paymentStatus: order.paymentStatus,
-          alreadyProcessed: transition.alreadyProcessed,
-          reason: transition.reason,
-        });
+        res.json({status:'ok', orderId:order.id});
       } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : 'Invalid webhook JSON payload.',
-        });
+        console.error('Cashfree webhook processing error:', err);
+        res.status(503).json({error:'Webhook could not be processed; please retry.'});
       }
     }
   );
@@ -511,12 +464,21 @@ export function createApiApp() {
       .map((i) => `${i.title} x${i.quantity} (₹${i.lineTotalInr})`)
       .join(' · ');
 
+    const providedPhone = String(customerPhone || shippingAddress?.phone || '').replace(/[^0-9]/g, '').slice(-10);
+    if (!/^[6-9][0-9]{9}$/.test(providedPhone)) {
+      res.status(400).json({error:'Please enter a valid 10-digit Indian mobile number before paying.'});
+      return;
+    }
+    if (!authCtx.email) {
+      res.status(400).json({error:'Please sign in with an account that has an email address.'});
+      return;
+    }
     const nowIso = new Date().toISOString();
     const newOrder: ServerOrderRecord = {
       id: orderId,
       userId: authCtx.uid,
       customerName: String(customerName || authCtx.email || 'Student').slice(0, 120),
-      customerEmail: String(customerEmail || authCtx.email || 'student@example.com').slice(0, 256),
+      customerEmail: authCtx.email.slice(0, 256),
       totalAmountInr: verifiedCart.totalAmountInr,
       paymentStatus: 'pending',
       shipmentStatus: verifiedCart.hasPhysicalItems ? 'processing' : 'not_applicable',
@@ -537,18 +499,23 @@ export function createApiApp() {
       updatedAt: nowIso,
     };
 
-    serverOrders.set(orderId, newOrder);
+    // Persist pending orders before opening checkout; never use function memory for payments.
+    try {
+      const db = await getPaymentDb();
+      await db.collection('orders').doc(orderId).create(newOrder);
+    } catch (error) {
+      console.error('Could not persist payment order:', error);
+      res.status(503).json({error:'Payment database is unavailable. Please try again later.'});
+      return;
+    }
 
-    // Cashfree Environment Detection: auto-detect production if explicit or if production secret provided
     const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
     const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd =
-      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
-      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
-    const isProdKey = cfSecret.includes('_prod_');
+    // Server configuration, never a browser variable or heuristic, chooses live mode.
+    const cfEnv: 'production' | 'sandbox' =
+      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production'
+        ? 'production' : 'sandbox';
     const isTestKey = cfAppId.startsWith('TEST') || cfSecret.includes('_test_');
-
-    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
 
     if (cfEnv === 'production') {
       if (isTestKey) {
@@ -597,10 +564,7 @@ export function createApiApp() {
               customer_id: authCtx.uid.slice(0, 45),
               customer_name: newOrder.customerName,
               customer_email: newOrder.customerEmail,
-              customer_phone: String(customerPhone || shippingAddress?.phone || '9876543210').replace(
-                /[^0-9]/g,
-                ''
-              ).slice(-10) || '9876543210',
+              customer_phone: providedPhone,
             },
             order_meta: {
               return_url: `${appUrl}/?order_id={order_id}`,
@@ -614,11 +578,15 @@ export function createApiApp() {
             cf_order_id?: string;
             payment_session_id?: string;
           };
+          if (!cfData.payment_session_id) {
+            res.status(502).json({error:'Cashfree returned no payment session.'});
+            return;
+          }
           res.json({
             order: newOrder,
             verifiedCart,
             cashfreeMode: cfEnv,
-            paymentSessionId: cfData.payment_session_id || `session_${orderId}`,
+            paymentSessionId: cfData.payment_session_id,
           });
           return;
         } else {
@@ -638,28 +606,12 @@ export function createApiApp() {
       }
     }
 
-    // A deployed site must never substitute a fake session when Cashfree is
-    // unconfigured or rejects the order. Fail closed instead of presenting
-    // customers with an unusable checkout.
-    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-      res.status(cfAppId && cfSecret ? 502 : 503).json({
-        error: cfAppId && cfSecret
-          ? 'Payment provider could not create the order. Please try again later.'
-          : 'Online payments are temporarily unavailable.',
-      });
-      return;
-    }
-
-    // Return order + sandbox session token for interactive Cashfree checkout verification
-    res.json({
-      order: newOrder,
-      verifiedCart,
-      cashfreeMode: 'sandbox',
-      paymentSessionId: `cf_sandbox_session_${orderId}`,
+    res.status(503).json({
+      error: 'Cashfree credentials are not configured. Online payment is unavailable.',
     });
   });
 
-  // 4. Cashfree Payment Verification & Signed Sandbox Webhook Dispatcher
+  // 4. Cashfree Payment Verification  // 4. Cashfree Payment Verification & Signed Sandbox Webhook Dispatcher
   // Never marks an order paid merely because the user reached a success screen;
   // requires either live Cashfree API check or signed HMAC-SHA256 webhook verification.
   app.post('/api/cashfree/verify-order', async (req, res) => {
