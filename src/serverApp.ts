@@ -662,18 +662,20 @@ export function createApiApp() {
       return;
     }
 
-    const myOrders = Array.from(serverOrders.values())
-      .filter((o) => o.userId === authCtx.uid)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-    const myEntitlements = Array.from(serverEntitlements.values()).filter(
-      (e) => e.userId === authCtx.uid
-    );
-
-    res.json({
-      orders: myOrders,
-      entitlements: myEntitlements,
-    });
+    try {
+      const db = await getPaymentDb();
+      const [orderSnapshot, entitlementSnapshot] = await Promise.all([
+        db.collection('orders').where('userId', '==', authCtx.uid).get(),
+        db.collection('entitlements').where('userId', '==', authCtx.uid).get(),
+      ]);
+      const orders = orderSnapshot.docs.map((d) => d.data() as ServerOrderRecord)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const entitlements = entitlementSnapshot.docs.map((d) => d.data() as ServerEntitlementRecord);
+      res.json({orders, entitlements});
+    } catch (err) {
+      console.error('Could not load payment library:', err);
+      res.status(503).json({error:'Purchase records are temporarily unavailable.'});
+    }
   });
 
   // 6. Protected Content Signed Access Endpoint (Courses & Digital Books)
@@ -691,16 +693,27 @@ export function createApiApp() {
     let lessonObj: CourseLesson | undefined;
     if (lessonId) {
       lessonObj = serverLessons.get(String(lessonId));
-      if (lessonObj && lessonObj.isFreePreview) {
-        isFreePreview = true;
+      if (!lessonObj || lessonObj.courseId !== product.id) {
+        res.status(404).json({error:'Lesson does not belong to this course.'});
+        return;
+      }
+      isFreePreview = lessonObj.isFreePreview;
+    }
+    let userEntitledProductIds: string[] = [];
+    if (authCtx?.uid) {
+      try {
+        const db = await getPaymentDb();
+        const grant = await db.collection('entitlements')
+          .doc(`${authCtx.uid}_${product.id}`).get();
+        if (grant.exists && grant.data()?.userId === authCtx.uid &&
+            grant.data()?.productId === product.id) {
+          userEntitledProductIds = [product.id];
+        }
+      } catch {
+        res.status(503).json({error:'Unable to check purchased content access.'});
+        return;
       }
     }
-
-    const userEntitledProductIds = authCtx?.uid
-      ? Array.from(serverEntitlements.values())
-          .filter((e) => e.userId === authCtx.uid)
-          .map((e) => e.productId)
-      : [];
 
     const accessCheck = canUserAccessProtectedContent({
       auth: authCtx,
@@ -819,9 +832,16 @@ export function createApiApp() {
       return;
     }
 
-    const allOrders = Array.from(serverOrders.values()).sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt)
-    );
+    let allOrders: ServerOrderRecord[];
+    try {
+      const db = await getPaymentDb();
+      const orderDocs = await db.collection('orders').get();
+      allOrders = orderDocs.docs.map((d) => d.data() as ServerOrderRecord)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    } catch {
+      res.status(503).json({error:'Unable to load persistent payment records.'});
+      return;
+    }
     const paidOrders = allOrders.filter((o) => o.paymentStatus === 'paid');
     const totalSalesInr = paidOrders.reduce((acc, o) => acc + o.totalAmountInr, 0);
 
@@ -926,16 +946,28 @@ export function createApiApp() {
 
     if (action === 'update_order') {
       const { orderId, shipmentStatus, paymentStatus } = payload || {};
-      const ord = serverOrders.get(String(orderId || ''));
-      if (!ord) {
-        res.status(404).json({ error: 'Order not found.' });
+      if (paymentStatus !== undefined) {
+        res.status(403).json({error:'Payment status may only be changed by verified Cashfree events.'});
         return;
       }
-      if (shipmentStatus) ord.shipmentStatus = shipmentStatus;
-      if (paymentStatus) ord.paymentStatus = paymentStatus;
-      ord.updatedAt = new Date().toISOString();
-      serverOrders.set(ord.id, ord);
-      res.json({ status: 'ok', order: ord });
+      const statuses = ['not_applicable', 'processing', 'packed', 'shipped', 'delivered'];
+      if (!statuses.includes(shipmentStatus)) {
+        res.status(400).json({error:'Invalid shipment status.'});
+        return;
+      }
+      try {
+        const db = await getPaymentDb();
+        const ref = db.collection('orders').doc(String(orderId || ''));
+        const doc = await ref.get();
+        if (!doc.exists) {
+          res.status(404).json({error:'Order not found.'});
+          return;
+        }
+        await ref.update({shipmentStatus, updatedAt:new Date().toISOString()});
+        res.json({status:'ok', order:{...doc.data(), shipmentStatus}});
+      } catch {
+        res.status(503).json({error:'Unable to update shipment.'});
+      }
       return;
     }
 
