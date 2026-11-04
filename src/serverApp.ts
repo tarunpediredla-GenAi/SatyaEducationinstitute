@@ -303,8 +303,20 @@ async function resolveServerAuthContext(req: express.Request): Promise<AuthToken
   return null;
 }
 
+function cleanEnvString(val?: string): string {
+  if (!val) return '';
+  let cleaned = val.trim();
+  if (
+    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+    (cleaned.startsWith("'") && cleaned.endsWith("'"))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  return cleaned;
+}
+
 function getCashfreeSecretKey(): string {
-  return process.env.CASHFREE_SECRET_KEY || '';
+  return cleanEnvString(process.env.CASHFREE_SECRET_KEY);
 }
 
 function getActiveCouponsMap(): Record<string, number> {
@@ -594,11 +606,11 @@ export function createApiApp() {
     serverOrders.set(orderId, newOrder);
 
     // Cashfree Environment Detection: auto-detect production if explicit or if production secret provided
-    const cfAppId = (process.env.CASHFREE_APP_ID || '').trim();
-    const cfSecret = (process.env.CASHFREE_SECRET_KEY || '').trim();
+    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
+    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
     const isExplicitProd =
-      (process.env.CASHFREE_ENV || '').trim().toLowerCase() === 'production' ||
-      (process.env.VITE_CASHFREE_ENV || '').trim().toLowerCase() === 'production';
+      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
+      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
     const isProdKey = cfSecret.includes('_prod_');
     const isTestKey = cfAppId.startsWith('TEST') || cfSecret.includes('_test_');
 
@@ -828,11 +840,11 @@ export function createApiApp() {
     }
 
     // Direct Cashfree server-to-server check if live credentials are configured
-    const cfAppId = process.env.CASHFREE_APP_ID;
-    const cfSecret = process.env.CASHFREE_SECRET_KEY;
+    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
+    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
     const isExplicitProd =
-      (process.env.CASHFREE_ENV || '').trim().toLowerCase() === 'production' ||
-      (process.env.VITE_CASHFREE_ENV || '').trim().toLowerCase() === 'production';
+      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
+      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
     const isProdKey = Boolean(cfSecret && cfSecret.includes('_prod_'));
     const isTestKey = Boolean((cfAppId && cfAppId.startsWith('TEST')) || (cfSecret && cfSecret.includes('_test_')));
     const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
