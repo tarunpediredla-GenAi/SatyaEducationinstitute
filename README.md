@@ -27,7 +27,7 @@ Full-stack e-commerce website and student/admin portal for **Satya’s Education
    ```bash
    cp .env.example .env
    ```
-   Fill in your public `VITE_FIREBASE_*` variables and server-only `FIREBASE_*` and `CASHFREE_*` credentials.
+   Configure the server-only `FIREBASE_*` and `CASHFREE_*` credentials locally. The frontend currently reads Firebase client configuration from `firebase-applet-config.json`, not `VITE_FIREBASE_*` environment variables. Never commit real secrets.
 3. **Run unit & security tests**:
    ```bash
    npx --yes tsx --test src/utils/commerceRules.test.ts firestore.rules.test.ts
@@ -87,6 +87,22 @@ The following steps must be completed manually in your Firebase, Cashfree, and V
 5. Once deployed, copy your `.vercel.app` domain and add it to **Firebase Authorized Domains** and **Cashfree Webhooks**.
 6. To attach a custom domain, go to **Vercel Project Settings → Domains**, add your domain, configure the DNS records shown by Vercel, and add the custom domain to Firebase Authorized Domains.
 7. **Important**: Whenever you change any environment variable in Vercel, trigger a new **Redeploy** from the **Deployments** tab so updated variables take effect.
+
+---
+
+### Step D: Vercel Environment Variable Checklist
+
+The authoritative environment variable **values** belong in **Vercel → Project Settings → Environment Variables**, not in GitHub. The committed `.env.example` contains names only and is safe to share.
+
+- **Server Firebase Auth (required for secure API routes):** `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. All three must be configured for Production (and Preview if testing auth there). The Admin private key must be server-only and must preserve PEM newlines.
+- **Firebase Storage (optional):** `FIREBASE_STORAGE_BUCKET`.
+- **Cashfree backend:** `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_ENV`, `CASHFREE_API_VERSION`. Match the Cashfree credentials to the selected `sandbox` or `production` environment. Do not mix environments or send API secrets to the browser.
+- **Browser checkout mode:** `VITE_CASHFREE_ENV`. Values prefixed with `VITE_` are bundled into the frontend, so this variable must **never** contain a secret. Keep its mode consistent with `CASHFREE_ENV`.
+- **Website return URL:** `APP_URL`. Set to the live `https://` website origin for Cashfree return links (for example `https://satyaeducation.in`).
+
+After changing environment variables, create a **new Vercel deployment** unless a deployment was already built afterward. A GitHub commit cannot copy or update Vercel environment values. Confirm the updated deployment and test login and checkout with Sandbox before accepting real payments.
+
+**Production warning:** Current order and entitlement state is held in memory and is not durable across Vercel function instances. Migrate paid order and entitlement records to persistent storage with idempotent Cashfree webhook processing before enabling live customer payments.
 
 ---
 
