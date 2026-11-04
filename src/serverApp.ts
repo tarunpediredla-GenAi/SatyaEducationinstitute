@@ -611,183 +611,47 @@ export function createApiApp() {
     });
   });
 
-  // 4. Cashfree Payment Verification  // 4. Cashfree Payment Verification & Signed Sandbox Webhook Dispatcher
-  // Never marks an order paid merely because the user reached a success screen;
-  // requires either live Cashfree API check or signed HMAC-SHA256 webhook verification.
+  // 4. Server-side payment verification. Client-provided outcomes are never trusted.
   app.post('/api/cashfree/verify-order', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
-    if (!authCtx || !authCtx.uid) {
-      res.status(401).json({ error: 'Authentication required.' });
+    if (!authCtx) {
+      res.status(401).json({error:'Please sign in again to verify your payment.'});
       return;
     }
-
-    const { orderId, simulatedOutcome } = req.body || {};
-    const order = serverOrders.get(String(orderId || ''));
-    if (!order) {
-      res.status(404).json({ error: 'Order not found.' });
-      return;
-    }
-
-    if (order.userId !== authCtx.uid && !canUserPerformAdminOperation(authCtx)) {
-      res.status(403).json({ error: 'Forbidden: You can only verify your own orders.' });
-      return;
-    }
-
-    // If simulatedOutcome is provided in Sandbox Checkout Modal, dispatch through the real
-    // HMAC-SHA256 webhook verification logic so the exact cryptographic verification path runs
-    if (simulatedOutcome) {
-      // Never accept simulated payment success on a deployed website.
-      if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-        res.status(403).json({ error: 'Simulated payment outcomes are disabled in production.' });
+    const orderId = String(req.body?.orderId || '');
+    try {
+      const order = await loadStoredOrder(orderId);
+      if (!order) {
+        res.status(404).json({error:'Order not found.'});
         return;
       }
-      const outcomeStatus =
-        simulatedOutcome === 'SUCCESS'
-          ? 'SUCCESS'
-          : simulatedOutcome === 'FAILED'
-          ? 'FAILED'
-          : 'USER_DROPPED';
-
-      const cfPaymentId = `cf_pay_${Date.now()}`;
-      const timestamp = String(Date.now());
-      const webhookPayload = JSON.stringify({
-        data: {
-          order: {
-            order_id: order.id,
-            order_amount: order.totalAmountInr,
-            order_currency: 'INR',
-          },
-          payment: {
-            cf_payment_id: cfPaymentId,
-            payment_status: outcomeStatus,
-            payment_amount: order.totalAmountInr,
-            payment_currency: 'INR',
-          },
-        },
-        event_time: new Date().toISOString(),
-        type:
-          outcomeStatus === 'SUCCESS'
-            ? 'PAYMENT_SUCCESS_WEBHOOK'
-            : outcomeStatus === 'FAILED'
-            ? 'PAYMENT_FAILED_WEBHOOK'
-            : 'PAYMENT_USER_DROPPED_WEBHOOK',
-      });
-
-      const secretKey = getCashfreeSecretKey();
-      const signature = computeCashfreeWebhookSignature(timestamp, webhookPayload, secretKey);
-      const signatureValid = verifyCashfreeWebhookSignature({
-        timestampHeader: timestamp,
-        signatureHeader: signature,
-        rawBody: webhookPayload,
-        secretKey,
-      });
-
-      if (!signatureValid) {
-        res.status(400).json({ error: 'Webhook signature self-check failed.' });
+      if (order.userId !== authCtx.uid && !canUserPerformAdminOperation(authCtx)) {
+        res.status(403).json({error:'You can only verify your own orders.'});
         return;
       }
-
-      if (outcomeStatus === 'SUCCESS') {
-        const fulfillment = fulfillVerifiedPaidOrder(order, cfPaymentId);
-        res.json({
-          verified: true,
-          order,
-          alreadyProcessed: fulfillment.alreadyProcessed,
-          entitlements: fulfillment.entitlementsGranted,
-          webhookSignatureVerified: true,
-        });
+      // Even if already paid, the only source of paid status is the server's
+      // transactional state written after Cashfree confirmation.
+      if (order.paymentStatus === 'paid') {
+        res.json({verified:true, order, entitlements:[]});
         return;
       }
-
-      const transition = evaluateOrderWebhookTransition({
-        order,
-        cashfreePaymentStatus: outcomeStatus,
-        paidAmountInr: order.totalAmountInr,
-        cashfreePaymentId: cfPaymentId,
-      });
-
-      if (transition.shouldUpdateOrder) {
-        order.paymentStatus = transition.nextPaymentStatus;
-        order.shipmentStatus = transition.nextShipmentStatus;
-        order.cashfreePaymentId = cfPaymentId;
-        order.updatedAt = new Date().toISOString();
-        serverOrders.set(order.id, order);
+      const paymentId = await fetchVerifiedCashfreePayment(order);
+      if (!paymentId) {
+        res.json({verified:false, order, entitlements:[], message:'Payment is pending or unsuccessful.'});
+        return;
       }
-
+      const result = await fulfillVerifiedPaidOrder(order, paymentId);
+      const updatedOrder = await loadStoredOrder(order.id);
       res.json({
-        verified: false,
-        order,
-        alreadyProcessed: transition.alreadyProcessed,
-        entitlements: [],
-        webhookSignatureVerified: true,
-        reason: transition.reason,
+        verified:updatedOrder?.paymentStatus === 'paid',
+        order:updatedOrder,
+        alreadyProcessed:result.alreadyProcessed,
+        entitlements:result.entitlementsGranted,
       });
-      return;
+    } catch (err) {
+      console.error('Payment status verification failed:', err);
+      res.status(503).json({error:'Unable to check payment status securely. Please try again.'});
     }
-
-    // Direct Cashfree server-to-server check if live credentials are configured
-    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
-    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd =
-      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
-      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
-    const isProdKey = Boolean(cfSecret && cfSecret.includes('_prod_'));
-    const isTestKey = Boolean((cfAppId && cfAppId.startsWith('TEST')) || (cfSecret && cfSecret.includes('_test_')));
-    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
-
-    if (
-      order.paymentStatus !== 'paid' &&
-      cfAppId &&
-      cfSecret &&
-      cfAppId !== 'TEST_YOUR_CASHFREE_APP_ID' &&
-      cfSecret !== 'TEST_YOUR_CASHFREE_SECRET_KEY'
-    ) {
-      try {
-        const checkUrl =
-          cfEnv === 'production'
-            ? `https://api.cashfree.com/pg/orders/${order.id}`
-            : `https://sandbox.cashfree.com/pg/orders/${order.id}`;
-
-        const cfRes = await fetch(checkUrl, {
-          method: 'GET',
-          headers: {
-            'x-api-version': process.env.CASHFREE_API_VERSION || '2023-08-01',
-            'x-client-id': cfAppId,
-            'x-client-secret': cfSecret,
-          },
-        });
-
-        if (cfRes.ok) {
-          const cfOrder = (await cfRes.json()) as any;
-          if (cfOrder && (cfOrder.order_status === 'PAID' || cfOrder.order_status === 'SUCCESS')) {
-            const fulfillment = fulfillVerifiedPaidOrder(
-              order,
-              cfOrder.cf_order_id ? String(cfOrder.cf_order_id) : `cf_live_${Date.now()}`
-            );
-            res.json({
-              verified: true,
-              order,
-              alreadyProcessed: fulfillment.alreadyProcessed,
-              entitlements: fulfillment.entitlementsGranted,
-              webhookSignatureVerified: true,
-            });
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn('Cashfree live order status check error:', err);
-      }
-    }
-
-    // Return current authoritative state of the order (never marks paid on plain GET/POST without verification)
-    const userEntitlements = Array.from(serverEntitlements.values()).filter(
-      (e) => e.userId === order.userId
-    );
-    res.json({
-      verified: order.paymentStatus === 'paid',
-      order,
-      entitlements: userEntitlements,
-    });
   });
 
   // 5. User Orders & Entitlements Endpoint (Strictly Isolated to Authenticated Owner)
