@@ -445,10 +445,24 @@ export function createApiApp() {
 
     serverOrders.set(orderId, newOrder);
 
-    // If real Cashfree API credentials are configured in environment, call Cashfree PG v2023-08-01
-    const cfAppId = process.env.CASHFREE_APP_ID;
-    const cfSecret = process.env.CASHFREE_SECRET_KEY;
-    const cfEnv = process.env.CASHFREE_ENV === 'production' ? 'production' : 'sandbox';
+    // Cashfree Environment Detection: auto-detect production if explicit or if production secret provided
+    const cfAppId = (process.env.CASHFREE_APP_ID || '').trim();
+    const cfSecret = (process.env.CASHFREE_SECRET_KEY || '').trim();
+    const isExplicitProd =
+      (process.env.CASHFREE_ENV || '').trim().toLowerCase() === 'production' ||
+      (process.env.VITE_CASHFREE_ENV || '').trim().toLowerCase() === 'production';
+    const isProdKey = cfSecret.includes('_prod_');
+    const isTestKey = cfAppId.startsWith('TEST') || cfSecret.includes('_test_');
+
+    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
+
+    if (cfEnv === 'production' && isTestKey) {
+      res.status(400).json({
+        error:
+          'Configuration Error: You have configured CASHFREE_ENV="production", but your API credentials are for the Sandbox Test environment (starts with TEST / contains _test_). To accept real payments, please switch to the LIVE tab in your Cashfree Merchant Dashboard (https://merchant.cashfree.com) and copy your LIVE App ID and Secret Key.',
+      });
+      return;
+    }
 
     if (
       cfAppId &&
@@ -484,7 +498,7 @@ export function createApiApp() {
               ).slice(-10) || '9876543210',
             },
             order_meta: {
-              return_url: `${process.env.APP_URL || 'http://localhost:3000'}/?order_id={order_id}`,
+              return_url: `${process.env.APP_URL || 'https://satyaeducationinstitute.vercel.app'}/?order_id={order_id}`,
             },
           }),
         });
@@ -501,9 +515,24 @@ export function createApiApp() {
             paymentSessionId: cfData.payment_session_id || `session_${orderId}`,
           });
           return;
+        } else {
+          const errData = (await cfRes.json().catch(() => ({}))) as { message?: string };
+          console.error('Cashfree PG Order Creation Failed:', cfRes.status, errData);
+          if (cfEnv === 'production') {
+            res.status(400).json({
+              error: `Cashfree Live Gateway Error: ${errData?.message || `Status ${cfRes.status}. Please check your Live API credentials in Cashfree Dashboard.`}`,
+            });
+            return;
+          }
         }
       } catch (err) {
-        console.warn('Cashfree API call fallback to interactive sandbox session:', err);
+        console.error('Cashfree API invocation error:', err);
+        if (cfEnv === 'production') {
+          res.status(502).json({
+            error: 'Failed to contact Cashfree live payment servers. Please try again in a few moments.',
+          });
+          return;
+        }
       }
     }
 
@@ -645,7 +674,12 @@ export function createApiApp() {
     // Direct Cashfree server-to-server check if live credentials are configured
     const cfAppId = process.env.CASHFREE_APP_ID;
     const cfSecret = process.env.CASHFREE_SECRET_KEY;
-    const cfEnv = process.env.CASHFREE_ENV === 'production' ? 'production' : 'sandbox';
+    const isExplicitProd =
+      (process.env.CASHFREE_ENV || '').trim().toLowerCase() === 'production' ||
+      (process.env.VITE_CASHFREE_ENV || '').trim().toLowerCase() === 'production';
+    const isProdKey = Boolean(cfSecret && cfSecret.includes('_prod_'));
+    const isTestKey = Boolean(cfAppId.startsWith('TEST') || (cfSecret && cfSecret.includes('_test_')));
+    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
 
     if (
       order.paymentStatus !== 'paid' &&
