@@ -41,6 +41,7 @@ import {
   type CatalogProduct,
   type CourseLesson,
 } from './utils/commerceRules';
+import { getClientAuthHeaders } from './utils/apiAuth';
 import {
   INITIAL_BANNERS,
   INITIAL_CATEGORIES,
@@ -185,13 +186,14 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch('/api/user/library', {
-        headers: {
-          'x-satya-uid': activeSession.uid,
-          'x-satya-email': activeSession.email,
-          'x-satya-email-verified': String(activeSession.emailVerified),
-          'x-satya-admin-claim': String(activeSession.role === 'admin'),
-        },
+      const authHeaders = await getClientAuthHeaders(activeSession);
+      const queryParams = new URLSearchParams({
+        userId: activeSession.uid,
+        userEmail: activeSession.email,
+        userRole: activeSession.role,
+      });
+      const res = await fetch(`/api/user/library?${queryParams.toString()}`, {
+        headers: authHeaders,
       });
       if (res.ok) {
         const data = await res.json();

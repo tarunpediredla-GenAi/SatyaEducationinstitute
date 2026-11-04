@@ -14,6 +14,7 @@ import {
 import type { CatalogProduct, CourseLesson } from '../utils/commerceRules';
 import type { ActiveUserSession } from './AuthModal';
 import type { SavedAddressRecord } from './CartCheckoutView';
+import { getClientAuthHeaders, getClientAuthPayload } from '../utils/apiAuth';
 
 export interface UserOrderSummary {
   id: string;
@@ -132,16 +133,15 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   const handleSecureBookDownload = async (book: CatalogProduct) => {
     setDownloadStatus(`Verifying entitlement for "${book.title}"...`);
     try {
+      const authHeaders = await getClientAuthHeaders(user);
+      const authPayload = await getClientAuthPayload(user);
       const res = await fetch('/api/content/signed-url', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-satya-uid': user.uid,
-          'x-satya-email': user.email,
-          'x-satya-email-verified': String(user.emailVerified),
-          'x-satya-admin-claim': String(user.role === 'admin'),
-        },
-        body: JSON.stringify({ productId: book.id }),
+        headers: authHeaders,
+        body: JSON.stringify({
+          ...authPayload,
+          productId: book.id,
+        }),
       });
       const data = await res.json();
       if (!res.ok || !data.signedUrl) {

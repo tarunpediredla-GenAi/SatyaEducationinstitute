@@ -728,8 +728,37 @@ var serverBanners = new Map(
 );
 var serverOrders = /* @__PURE__ */ new Map();
 var serverEntitlements = /* @__PURE__ */ new Map();
+function decodeJwtPayload(token) {
+  try {
+    const parts = token.split(".");
+    if (parts.length === 3) {
+      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+      if (payload && (payload.user_id || payload.sub)) {
+        return {
+          uid: payload.user_id || payload.sub,
+          email: payload.email,
+          emailVerified: Boolean(payload.email_verified),
+          admin: Boolean(payload.admin)
+        };
+      }
+    }
+  } catch {
+  }
+  return null;
+}
 async function resolveServerAuthContext(req) {
-  const authHeader = req.headers.authorization;
+  let authHeader = req.headers.authorization;
+  let vercelHeaders = null;
+  const rawVercelSc = req.headers["x-vercel-sc-headers"];
+  if (typeof rawVercelSc === "string") {
+    try {
+      vercelHeaders = JSON.parse(rawVercelSc);
+      if (vercelHeaders && !authHeader && typeof vercelHeaders.authorization === "string") {
+        authHeader = vercelHeaders.authorization;
+      }
+    } catch {
+    }
+  }
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const idToken = authHeader.slice("Bearer ".length).trim();
     if (idToken) {
@@ -749,29 +778,23 @@ async function resolveServerAuthContext(req) {
         } catch {
         }
       }
-    }
-    try {
-      const parts = idToken.split(".");
-      if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-        if (payload && (payload.user_id || payload.sub)) {
-          return {
-            uid: payload.user_id || payload.sub,
-            email: payload.email,
-            emailVerified: Boolean(payload.email_verified),
-            customClaims: {
-              admin: Boolean(payload.admin)
-            }
-          };
-        }
+      const decodedPayload = decodeJwtPayload(idToken);
+      if (decodedPayload && decodedPayload.uid) {
+        return {
+          uid: decodedPayload.uid,
+          email: decodedPayload.email,
+          emailVerified: decodedPayload.emailVerified,
+          customClaims: {
+            admin: Boolean(decodedPayload.admin)
+          }
+        };
       }
-    } catch {
     }
   }
-  const sessionUid = req.headers["x-satya-uid"];
-  const sessionEmail = req.headers["x-satya-email"];
-  const sessionVerified = req.headers["x-satya-email-verified"];
-  const sessionAdminClaim = req.headers["x-satya-admin-claim"];
+  const sessionUid = req.headers["x-satya-uid"] || vercelHeaders && vercelHeaders["x-satya-uid"] || req.headers["x-user-id"] || req.headers["x-user-uid"];
+  const sessionEmail = req.headers["x-satya-email"] || vercelHeaders && vercelHeaders["x-satya-email"];
+  const sessionVerified = req.headers["x-satya-email-verified"] || vercelHeaders && vercelHeaders["x-satya-email-verified"];
+  const sessionAdminClaim = req.headers["x-satya-admin-claim"] || vercelHeaders && vercelHeaders["x-satya-admin-claim"];
   if (typeof sessionUid === "string" && sessionUid.trim().length > 0) {
     return {
       uid: sessionUid.trim(),
@@ -781,6 +804,64 @@ async function resolveServerAuthContext(req) {
         admin: sessionAdminClaim === "true"
       }
     };
+  }
+  const body = req.body;
+  if (body && typeof body === "object") {
+    if (typeof body.idToken === "string" && body.idToken.trim().length > 0) {
+      const decodedPayload = decodeJwtPayload(body.idToken.trim());
+      if (decodedPayload && decodedPayload.uid) {
+        return {
+          uid: decodedPayload.uid,
+          email: decodedPayload.email,
+          emailVerified: decodedPayload.emailVerified,
+          customClaims: {
+            admin: Boolean(decodedPayload.admin)
+          }
+        };
+      }
+    }
+    const bodyUid = body.userId || body.uid || body.customerUid || body.user?.uid;
+    if (typeof bodyUid === "string" && bodyUid.trim().length > 0) {
+      const bodyEmail = typeof (body.userEmail || body.customerEmail || body.email) === "string" ? (body.userEmail || body.customerEmail || body.email).trim() : void 0;
+      const isAdminEmail = typeof bodyEmail === "string" && bodyEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+      return {
+        uid: bodyUid.trim(),
+        email: bodyEmail,
+        emailVerified: body.userEmailVerified === true || body.emailVerified === true,
+        customClaims: {
+          admin: Boolean((body.userRole === "admin" || body.role === "admin") && isAdminEmail)
+        }
+      };
+    }
+  }
+  const query = req.query;
+  if (query && typeof query === "object") {
+    if (typeof query.idToken === "string" && query.idToken.trim().length > 0) {
+      const decodedPayload = decodeJwtPayload(query.idToken.trim());
+      if (decodedPayload && decodedPayload.uid) {
+        return {
+          uid: decodedPayload.uid,
+          email: decodedPayload.email,
+          emailVerified: decodedPayload.emailVerified,
+          customClaims: {
+            admin: Boolean(decodedPayload.admin)
+          }
+        };
+      }
+    }
+    const queryUid = query.userId || query.uid;
+    if (typeof queryUid === "string" && queryUid.trim().length > 0) {
+      const queryEmail = typeof (query.userEmail || query.email) === "string" ? String(query.userEmail || query.email).trim() : void 0;
+      const isAdminEmail = typeof queryEmail === "string" && queryEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+      return {
+        uid: queryUid.trim(),
+        email: queryEmail,
+        emailVerified: query.userEmailVerified === "true" || query.emailVerified === "true",
+        customClaims: {
+          admin: Boolean((query.userRole === "admin" || query.role === "admin") && isAdminEmail)
+        }
+      };
+    }
   }
   return null;
 }
@@ -1009,15 +1090,24 @@ function createApiApp() {
     const isProdKey = cfSecret.includes("_prod_");
     const isTestKey = cfAppId.startsWith("TEST") || cfSecret.includes("_test_");
     const cfEnv = (isExplicitProd || isProdKey) && !isTestKey ? "production" : isExplicitProd ? "production" : "sandbox";
-    if (cfEnv === "production" && isTestKey) {
-      res.status(400).json({
-        error: 'Configuration Error: You have configured CASHFREE_ENV="production", but your API credentials are for the Sandbox Test environment (starts with TEST / contains _test_). To accept real payments, please switch to the LIVE tab in your Cashfree Merchant Dashboard (https://merchant.cashfree.com) and copy your LIVE App ID and Secret Key.'
-      });
-      return;
+    if (cfEnv === "production") {
+      if (isTestKey) {
+        res.status(400).json({
+          error: 'Configuration Error: You have configured CASHFREE_ENV="production", but your API credentials are for the Sandbox Test environment (starts with TEST / contains _test_). To accept real payments, please switch to the LIVE tab in your Cashfree Merchant Dashboard (https://merchant.cashfree.com) and copy your LIVE App ID and Secret Key into Vercel environment variables.'
+        });
+        return;
+      }
+      if (!cfAppId || !cfSecret || cfAppId === "TEST_YOUR_CASHFREE_APP_ID" || cfSecret === "TEST_YOUR_CASHFREE_SECRET_KEY") {
+        res.status(400).json({
+          error: "Cashfree Live Configuration Missing: To accept live payments, please add CASHFREE_APP_ID and CASHFREE_SECRET_KEY from your Cashfree Live dashboard to your Vercel Project Settings -> Environment Variables, and then redeploy."
+        });
+        return;
+      }
     }
     if (cfAppId && cfSecret && cfAppId !== "TEST_YOUR_CASHFREE_APP_ID" && cfSecret !== "TEST_YOUR_CASHFREE_SECRET_KEY") {
       try {
         const baseUrl = cfEnv === "production" ? "https://api.cashfree.com/pg/orders" : "https://sandbox.cashfree.com/pg/orders";
+        const appUrl = (process.env.APP_URL || "https://satyaeducationinstitute.vercel.app").replace(/\/$/, "");
         const cfRes = await fetch(baseUrl, {
           method: "POST",
           headers: {
@@ -1040,7 +1130,8 @@ function createApiApp() {
               ).slice(-10) || "9876543210"
             },
             order_meta: {
-              return_url: `${process.env.APP_URL || "https://satyaeducationinstitute.vercel.app"}/?order_id={order_id}`
+              return_url: `${appUrl}/?order_id={order_id}`,
+              notify_url: `${appUrl}/api/cashfree/webhook`
             }
           })
         });
@@ -1167,7 +1258,7 @@ function createApiApp() {
     const cfSecret = process.env.CASHFREE_SECRET_KEY;
     const isExplicitProd = (process.env.CASHFREE_ENV || "").trim().toLowerCase() === "production" || (process.env.VITE_CASHFREE_ENV || "").trim().toLowerCase() === "production";
     const isProdKey = Boolean(cfSecret && cfSecret.includes("_prod_"));
-    const isTestKey = Boolean(cfAppId.startsWith("TEST") || cfSecret && cfSecret.includes("_test_"));
+    const isTestKey = Boolean(cfAppId && cfAppId.startsWith("TEST") || cfSecret && cfSecret.includes("_test_"));
     const cfEnv = (isExplicitProd || isProdKey) && !isTestKey ? "production" : isExplicitProd ? "production" : "sandbox";
     if (order.paymentStatus !== "paid" && cfAppId && cfSecret && cfAppId !== "TEST_YOUR_CASHFREE_APP_ID" && cfSecret !== "TEST_YOUR_CASHFREE_SECRET_KEY") {
       try {

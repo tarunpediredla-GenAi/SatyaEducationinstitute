@@ -22,6 +22,7 @@ import {
 import type { CategoryItem, PromotionalBanner } from '../data/sampleCatalog';
 import type { ActiveUserSession } from './AuthModal';
 import type { UserOrderSummary } from './UserDashboardView';
+import { getClientAuthHeaders, getClientAuthPayload } from '../utils/apiAuth';
 
 interface AdminDashboardViewProps {
   user: ActiveUserSession | null;
@@ -101,13 +102,14 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const fetchAdminOverview = async () => {
     if (!user || !isAuthorizedAdmin) return;
     try {
-      const res = await fetch('/api/admin/overview', {
-        headers: {
-          'x-satya-uid': user.uid,
-          'x-satya-email': user.email,
-          'x-satya-email-verified': String(user.emailVerified),
-          'x-satya-admin-claim': String(user.role === 'admin'),
-        },
+      const authHeaders = await getClientAuthHeaders(user);
+      const queryParams = new URLSearchParams({
+        userId: user.uid,
+        userEmail: user.email,
+        userRole: user.role,
+      });
+      const res = await fetch(`/api/admin/overview?${queryParams.toString()}`, {
+        headers: authHeaders,
       });
       if (res.ok) {
         const data = await res.json();
@@ -159,16 +161,12 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
     setErrorMessage(null);
     setStatusMessage(null);
     try {
+      const authHeaders = await getClientAuthHeaders(user);
+      const authPayload = await getClientAuthPayload(user);
       const res = await fetch('/api/admin/action', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-satya-uid': user.uid,
-          'x-satya-email': user.email,
-          'x-satya-email-verified': String(user.emailVerified),
-          'x-satya-admin-claim': 'true',
-        },
-        body: JSON.stringify({ action, payload }),
+        headers: authHeaders,
+        body: JSON.stringify({ ...authPayload, action, payload }),
       });
       const data = await res.json();
       if (!res.ok) {

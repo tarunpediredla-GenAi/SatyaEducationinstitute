@@ -13,6 +13,7 @@ import {
 import type { CatalogProduct } from '../utils/commerceRules';
 import type { ActiveUserSession } from './AuthModal';
 import { CoverArtwork, formatCleanTitle } from './CoverArtwork';
+import { getClientAuthHeaders, getClientAuthPayload } from '../utils/apiAuth';
 
 export interface CartItemState {
   productId: string;
@@ -184,16 +185,14 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
 
     setCheckoutLoading(true);
     try {
+      const authHeaders = await getClientAuthHeaders(user);
+      const authPayload = await getClientAuthPayload(user);
+
       const response = await fetch('/api/cashfree/create-order', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-satya-uid': user.uid,
-          'x-satya-email': user.email,
-          'x-satya-email-verified': String(user.emailVerified),
-          'x-satya-admin-claim': String(user.role === 'admin'),
-        },
+        headers: authHeaders,
         body: JSON.stringify({
+          ...authPayload,
           cartItems: cart,
           couponCode: appliedCoupon,
           shippingAddress: resolvedAddress,
@@ -274,16 +273,14 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
     setCheckoutLoading(true);
     setCheckoutError(null);
     try {
+      const authHeaders = await getClientAuthHeaders(user);
+      const authPayload = await getClientAuthPayload(user);
+
       const res = await fetch('/api/cashfree/verify-order', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-satya-uid': user.uid,
-          'x-satya-email': user.email,
-          'x-satya-email-verified': String(user.emailVerified),
-          'x-satya-admin-claim': String(user.role === 'admin'),
-        },
+        headers: authHeaders,
         body: JSON.stringify({
+          ...authPayload,
           orderId: activeCashfreeSession.orderId,
           simulatedOutcome,
         }),
@@ -719,6 +716,28 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                   : 'Sign In to Checkout with Cashfree'}
               </span>
             </button>
+
+            {/* Accepted Payment Modes Badges */}
+            <div className="pt-2 border-t border-slate-200/80 space-y-2">
+              <p className="text-[11px] font-semibold text-slate-700 flex items-center gap-1.5">
+                <CreditCard className="w-3.5 h-3.5 text-[#B48A1E]" />
+                <span>Accepted Payment Methods (Real-Time INR):</span>
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5 text-[10px] font-medium text-slate-700">
+                <span className="px-2 py-1 bg-slate-100 rounded-md border border-slate-200">
+                  💳 Credit Cards (Visa, MasterCard, RuPay, Amex)
+                </span>
+                <span className="px-2 py-1 bg-slate-100 rounded-md border border-slate-200">
+                  💳 Debit Cards (All Banks)
+                </span>
+                <span className="px-2 py-1 bg-slate-100 rounded-md border border-slate-200">
+                  📱 UPI (PhonePe, GPay, Paytm)
+                </span>
+                <span className="px-2 py-1 bg-slate-100 rounded-md border border-slate-200">
+                  🏦 Net Banking (50+ Banks)
+                </span>
+              </div>
+            </div>
 
             <div className="flex items-start gap-2 text-[11px] text-slate-500 leading-relaxed">
               <ShieldCheck className="w-4 h-4 text-[#B48A1E] shrink-0 mt-0.5" />
