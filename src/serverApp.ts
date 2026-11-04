@@ -142,47 +142,15 @@ async function resolveServerAuthContext(req: express.Request): Promise<AuthToken
             },
           };
         } catch {
-          // Fall through to decoded JWT payload check in container preview
+          // Invalid or expired Firebase ID tokens must never be trusted.
+          return null;
         }
       }
     }
-    // Decode Firebase JWT payload in container preview when Admin cert is not injected
-    try {
-      const parts = idToken.split('.');
-      if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-        if (payload && (payload.user_id || payload.sub)) {
-          return {
-            uid: payload.user_id || payload.sub,
-            email: payload.email,
-            emailVerified: Boolean(payload.email_verified),
-            customClaims: {
-              admin: Boolean(payload.admin),
-            },
-          };
-        }
-      }
-    } catch {
-      // Ignore malformed JWT
-    }
   }
 
-  // Support verified interactive session header for local/sandbox evaluation
-  const sessionUid = req.headers['x-satya-uid'];
-  const sessionEmail = req.headers['x-satya-email'];
-  const sessionVerified = req.headers['x-satya-email-verified'];
-  const sessionAdminClaim = req.headers['x-satya-admin-claim'];
-
-  if (typeof sessionUid === 'string' && sessionUid.trim().length > 0) {
-    return {
-      uid: sessionUid.trim(),
-      email: typeof sessionEmail === 'string' ? sessionEmail.trim() : undefined,
-      emailVerified: sessionVerified === 'true',
-      customClaims: {
-        admin: sessionAdminClaim === 'true',
-      },
-    };
-  }
+  // Do not accept client-supplied identity headers. Authentication requires
+  // Firebase Admin to verify the Bearer token's signature and claims.
 
   return null;
 }
