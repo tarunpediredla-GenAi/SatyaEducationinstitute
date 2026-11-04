@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
+import firebaseConfig from '../firebase-applet-config.json';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   calculateVerifiedCartSummary,
@@ -121,186 +122,158 @@ export interface ServerEntitlementRecord {
 const serverOrders = new Map<string, ServerOrderRecord>();
 const serverEntitlements = new Map<string, ServerEntitlementRecord>();
 
-function decodeJwtPayload(token: string): { uid?: string; email?: string; emailVerified?: boolean; admin?: boolean } | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-      if (payload && (payload.user_id || payload.sub)) {
-        return {
-          uid: payload.user_id || payload.sub,
-          email: payload.email,
-          emailVerified: Boolean(payload.email_verified),
-          admin: Boolean(payload.admin),
-        };
-      }
-    }
-  } catch {
-    // Ignore malformed JWT
-  }
-  return null;
-}
-
 /**
- * Verifies Authorization Bearer token, session headers, body attributes, or query parameters.
- * Resilient against reverse proxies (e.g., Vercel) that strip custom headers during rewrites.
+ * Never trust unsigned JWT payloads, client-supplied uid/role fields, or custom
+ * session headers as identity. Only Firebase Admin's signature verification
+ * authorizes a payment, library, or administrator request.
  */
 async function resolveServerAuthContext(req: express.Request): Promise<AuthTokenContext | null> {
-  // 1. Check direct Authorization header or Vercel encapsulated headers
-  let authHeader = req.headers.authorization;
-  let vercelHeaders: Record<string, string> | null = null;
-  const rawVercelSc = req.headers['x-vercel-sc-headers'];
-  if (typeof rawVercelSc === 'string') {
-    try {
-      vercelHeaders = JSON.parse(rawVercelSc);
-      if (vercelHeaders && !authHeader && typeof vercelHeaders.authorization === 'string') {
-        authHeader = vercelHeaders.authorization;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  // 1a. Check Authorization Bearer ID Token
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const idToken = authHeader.slice('Bearer '.length).trim();
-    if (idToken) {
-      const isReady = await ensureAdminAppInitialized();
-      if (isReady) {
-        try {
-          const { getAuth: getAdminAuth } = await import('firebase-admin/auth');
-          const decoded = await getAdminAuth().verifyIdToken(idToken);
-          return {
-            uid: decoded.uid,
-            email: decoded.email,
-            emailVerified: decoded.email_verified,
-            customClaims: {
-              admin: Boolean(decoded.admin),
-            },
-          };
-        } catch {
-          // Fall through to decoded JWT payload check
-        }
-      }
-
-      const decodedPayload = decodeJwtPayload(idToken);
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
-    }
-  }
-
-  // 2. Support custom session headers (direct or via Vercel sc headers)
-  const sessionUid =
-    req.headers['x-satya-uid'] ||
-    (vercelHeaders && vercelHeaders['x-satya-uid']) ||
-    req.headers['x-user-id'] ||
-    req.headers['x-user-uid'];
-  const sessionEmail =
-    req.headers['x-satya-email'] ||
-    (vercelHeaders && vercelHeaders['x-satya-email']);
-  const sessionVerified =
-    req.headers['x-satya-email-verified'] ||
-    (vercelHeaders && vercelHeaders['x-satya-email-verified']);
-  const sessionAdminClaim =
-    req.headers['x-satya-admin-claim'] ||
-    (vercelHeaders && vercelHeaders['x-satya-admin-claim']);
-
-  if (typeof sessionUid === 'string' && sessionUid.trim().length > 0) {
+  const bearer = typeof req.headers.authorization === 'string' &&
+    req.headers.authorization.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7).trim()
+    : '';
+  // Vercel rewrites should preserve Authorization; signed tokens in request
+  // bodies are supported for older clients without trusting other body fields.
+  const bodyToken = typeof req.body?.idToken === 'string' ? req.body.idToken : '';
+  const token = bearer || bodyToken;
+  if (!token || !(await ensureAdminAppInitialized())) return null;
+  try {
+    const { getAuth } = await import('firebase-admin/auth');
+    const decoded = await getAuth().verifyIdToken(token, true);
     return {
-      uid: sessionUid.trim(),
-      email: typeof sessionEmail === 'string' ? sessionEmail.trim() : undefined,
-      emailVerified: sessionVerified === 'true',
-      customClaims: {
-        admin: sessionAdminClaim === 'true',
-      },
+      uid: decoded.uid,
+      email: decoded.email,
+      emailVerified: decoded.email_verified,
+      customClaims: { admin: decoded.admin === true },
     };
+  } catch {
+    return null;
   }
+}
 
-  // 3. Fallback: Request body (vital for serverless proxies like Vercel that strip custom headers on POST/PUT)
-  const body = req.body;
-  if (body && typeof body === 'object') {
-    if (typeof body.idToken === 'string' && body.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(body.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
+async function getPaymentDb() {
+  if (!(await ensureAdminAppInitialized())) {
+    throw new Error('Firebase Admin service account credentials are missing or invalid.');
+  }
+  const { getApp } = await import('firebase-admin/app');
+  const { getFirestore } = await import('firebase-admin/firestore');
+  // Match the *named* database used by the client, not the default database.
+  const databaseId = process.env.FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+  return getFirestore(getApp(), databaseId);
+}
+
+async function loadStoredOrder(orderId: string): Promise<ServerOrderRecord | null> {
+  if (!/^ord_satya_[a-zA-Z0-9_]+$/.test(orderId)) return null;
+  const db = await getPaymentDb();
+  const doc = await db.collection('orders').doc(orderId).get();
+  return doc.exists ? (doc.data() as ServerOrderRecord) : null;
+}
+
+/** A successful frontend popup or signed webhook is not a payment receipt.
+ * Always confirm both the order AND a successful payment with Cashfree APIs.
+ */
+async function fetchVerifiedCashfreePayment(order: ServerOrderRecord): Promise<string | null> {
+  const appId = cleanEnvString(process.env.CASHFREE_APP_ID);
+  const secret = getCashfreeSecretKey();
+  if (!appId || !secret) throw new Error('Cashfree credentials are not configured.');
+  const cfEnv = cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production'
+    ? 'production' : 'sandbox';
+  const endpoint = cfEnv === 'production'
+    ? 'https://api.cashfree.com/pg/orders'
+    : 'https://sandbox.cashfree.com/pg/orders';
+  const headers = {
+    'x-api-version': process.env.CASHFREE_API_VERSION || '2023-08-01',
+    'x-client-id': appId,
+    'x-client-secret': secret,
+  };
+  const orderResponse = await fetch(`${endpoint}/${encodeURIComponent(order.id)}`, { headers });
+  if (!orderResponse.ok) throw new Error(`Cashfree order verification failed (HTTP ${orderResponse.status})`);
+  const cfOrder = await orderResponse.json() as any;
+  const amountMatches = (a: unknown) => Number.isFinite(Number(a)) &&
+    Math.abs(Number(a) - order.totalAmountInr) < 0.005;
+  if (cfOrder.order_id !== order.id || cfOrder.order_status !== 'PAID' ||
+      cfOrder.order_currency !== 'INR' || !amountMatches(cfOrder.order_amount)) return null;
+  const paymentsResponse = await fetch(
+    `${endpoint}/${encodeURIComponent(order.id)}/payments`, { headers }
+  );
+  if (!paymentsResponse.ok) throw new Error(`Cashfree payment lookup failed (HTTP ${paymentsResponse.status})`);
+  const payments = await paymentsResponse.json() as any;
+  const successfulPayment = Array.isArray(payments) ? payments.find((p: any) =>
+    p.payment_status === 'SUCCESS' && amountMatches(p.payment_amount) &&
+    (!p.payment_currency || p.payment_currency === 'INR') && p.cf_payment_id
+  ) : null;
+  return successfulPayment ? String(successfulPayment.cf_payment_id) : null;
+}
+
+async function fulfillVerifiedPaidOrder(
+  order: ServerOrderRecord, cashfreePaymentId: string
+): Promise<{alreadyProcessed: boolean; entitlementsGranted: ServerEntitlementRecord[]}> {
+  const db = await getPaymentDb();
+  const orderRef = db.collection('orders').doc(order.id);
+  const grants: ServerEntitlementRecord[] = [];
+  let alreadyProcessed = false;
+  await db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(orderRef);
+    if (!snapshot.exists) throw new Error('Payment order no longer exists.');
+    const saved = snapshot.data() as ServerOrderRecord;
+    if (saved.paymentStatus === 'paid') {
+      alreadyProcessed = true;
+      return;
     }
-
-    const bodyUid = body.userId || body.uid || body.customerUid || body.user?.uid;
-    if (typeof bodyUid === 'string' && bodyUid.trim().length > 0) {
-      const bodyEmail =
-        typeof (body.userEmail || body.customerEmail || body.email) === 'string'
-          ? (body.userEmail || body.customerEmail || body.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof bodyEmail === 'string' &&
-        bodyEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: bodyUid.trim(),
-        email: bodyEmail,
-        emailVerified: body.userEmailVerified === true || body.emailVerified === true,
-        customClaims: {
-          admin: Boolean((body.userRole === 'admin' || body.role === 'admin') && isAdminEmail),
-        },
+    const transition = evaluateOrderWebhookTransition({
+      order: saved,
+      cashfreePaymentStatus: 'SUCCESS',
+      paidAmountInr: saved.totalAmountInr,
+      cashfreePaymentId,
+    });
+    if (!transition.shouldUpdateOrder || !transition.shouldGrantEntitlements) {
+      throw new Error('Payment transition rejected.');
+    }
+    tx.update(orderRef, {
+      paymentStatus: 'paid',
+      shipmentStatus: transition.nextShipmentStatus,
+      cashfreePaymentId,
+      updatedAt: new Date().toISOString(),
+    });
+    for (const item of saved.lineItems) {
+      if (!['recorded_course', 'digital_book', 'hybrid_book'].includes(item.format)) continue;
+      const id = `${saved.userId}_${item.productId}`;
+      const record: ServerEntitlementRecord = {
+        id, userId: saved.userId, productId: item.productId,
+        productType: item.type, orderId: saved.id,
+        downloadPath: item.type === 'course'
+          ? `protected/courses/${item.productId}`
+          : `protected/books/${item.productId}/${item.productId}.pdf`,
+        grantedAt: new Date().toISOString(),
       };
+      tx.set(db.collection('entitlements').doc(id), record);
+      grants.push(record);
     }
-  }
+  });
+  return { alreadyProcessed, entitlementsGranted: grants };
+}
 
-  // 4. Fallback: Request query parameters (for GET requests like /api/user/library)
-  const query = req.query;
-  if (query && typeof query === 'object') {
-    if (typeof query.idToken === 'string' && query.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(query.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
-    }
-
-    const queryUid = query.userId || query.uid;
-    if (typeof queryUid === 'string' && queryUid.trim().length > 0) {
-      const queryEmail =
-        typeof (query.userEmail || query.email) === 'string'
-          ? String(query.userEmail || query.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof queryEmail === 'string' &&
-        queryEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: queryUid.trim(),
-        email: queryEmail,
-        emailVerified: query.userEmailVerified === 'true' || query.emailVerified === 'true',
-        customClaims: {
-          admin: Boolean((query.userRole === 'admin' || query.role === 'admin') && isAdminEmail),
-        },
-      };
-    }
-  }
-
-  return null;
+async function recordUnsuccessfulPayment(
+  order: ServerOrderRecord, status: string, amount: number, paymentId: string
+): Promise<void> {
+  const db = await getPaymentDb();
+  const ref = db.collection('orders').doc(order.id);
+  await db.runTransaction(async (tx) => {
+    const doc = await tx.get(ref);
+    if (!doc.exists) return;
+    const saved = doc.data() as ServerOrderRecord;
+    if (saved.paymentStatus === 'paid') return;
+    const transition = evaluateOrderWebhookTransition({
+      order: saved, cashfreePaymentStatus: status,
+      paidAmountInr: amount, cashfreePaymentId: paymentId,
+    });
+    if (transition.shouldUpdateOrder) tx.update(ref, {
+      paymentStatus: transition.nextPaymentStatus,
+      shipmentStatus: transition.nextShipmentStatus,
+      cashfreePaymentId: paymentId,
+      updatedAt: new Date().toISOString(),
+    });
+  });
 }
 
 function cleanEnvString(val?: string): string {
@@ -327,72 +300,6 @@ function getActiveCouponsMap(): Record<string, number> {
     }
   }
   return map;
-}
-
-function fulfillVerifiedPaidOrder(order: ServerOrderRecord, cashfreePaymentId: string): {
-  alreadyProcessed: boolean;
-  entitlementsGranted: ServerEntitlementRecord[];
-} {
-  const transition = evaluateOrderWebhookTransition({
-    order,
-    cashfreePaymentStatus: 'SUCCESS',
-    paidAmountInr: order.totalAmountInr,
-    cashfreePaymentId,
-  });
-
-  if (transition.alreadyProcessed) {
-    const existingGrants = Array.from(serverEntitlements.values()).filter(
-      (e) => e.orderId === order.id
-    );
-    return { alreadyProcessed: true, entitlementsGranted: existingGrants };
-  }
-
-  if (transition.shouldUpdateOrder) {
-    order.paymentStatus = transition.nextPaymentStatus;
-    order.shipmentStatus = transition.nextShipmentStatus;
-    order.cashfreePaymentId = cashfreePaymentId;
-    order.updatedAt = new Date().toISOString();
-    serverOrders.set(order.id, order);
-  }
-
-  if (transition.shouldDecrementStock) {
-    for (const item of order.lineItems) {
-      const prod = serverProducts.get(item.productId);
-      if (prod && (prod.format === 'physical_book' || prod.format === 'hybrid_book')) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-        serverProducts.set(prod.id, prod);
-      }
-    }
-  }
-
-  const granted: ServerEntitlementRecord[] = [];
-  if (transition.shouldGrantEntitlements) {
-    for (const item of order.lineItems) {
-      if (
-        item.format === 'recorded_course' ||
-        item.format === 'digital_book' ||
-        item.format === 'hybrid_book'
-      ) {
-        const entitlementId = `${order.userId}_${item.productId}`;
-        const record: ServerEntitlementRecord = {
-          id: entitlementId,
-          userId: order.userId,
-          productId: item.productId,
-          productType: item.type,
-          orderId: order.id,
-          downloadPath:
-            item.type === 'course'
-              ? `protected/courses/${item.productId}`
-              : `protected/books/${item.productId}/${item.productId}.pdf`,
-          grantedAt: new Date().toISOString(),
-        };
-        serverEntitlements.set(entitlementId, record);
-        granted.push(record);
-      }
-    }
-  }
-
-  return { alreadyProcessed: false, entitlementsGranted: granted };
 }
 
 export function createApiApp() {
