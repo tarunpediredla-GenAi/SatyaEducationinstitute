@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
+import firebaseConfig from '../firebase-applet-config.json';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   calculateVerifiedCartSummary,
@@ -118,189 +119,160 @@ export interface ServerEntitlementRecord {
   grantedAt: string;
 }
 
-const serverOrders = new Map<string, ServerOrderRecord>();
-const serverEntitlements = new Map<string, ServerEntitlementRecord>();
-
-function decodeJwtPayload(token: string): { uid?: string; email?: string; emailVerified?: boolean; admin?: boolean } | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-      if (payload && (payload.user_id || payload.sub)) {
-        return {
-          uid: payload.user_id || payload.sub,
-          email: payload.email,
-          emailVerified: Boolean(payload.email_verified),
-          admin: Boolean(payload.admin),
-        };
-      }
-    }
-  } catch {
-    // Ignore malformed JWT
-  }
-  return null;
-}
+// Payment orders and access grants are stored in Firestore, never process memory.
 
 /**
- * Verifies Authorization Bearer token, session headers, body attributes, or query parameters.
- * Resilient against reverse proxies (e.g., Vercel) that strip custom headers during rewrites.
+ * Never trust unsigned JWT payloads, client-supplied uid/role fields, or custom
+ * session headers as identity. Only Firebase Admin's signature verification
+ * authorizes a payment, library, or administrator request.
  */
 async function resolveServerAuthContext(req: express.Request): Promise<AuthTokenContext | null> {
-  // 1. Check direct Authorization header or Vercel encapsulated headers
-  let authHeader = req.headers.authorization;
-  let vercelHeaders: Record<string, string> | null = null;
-  const rawVercelSc = req.headers['x-vercel-sc-headers'];
-  if (typeof rawVercelSc === 'string') {
-    try {
-      vercelHeaders = JSON.parse(rawVercelSc);
-      if (vercelHeaders && !authHeader && typeof vercelHeaders.authorization === 'string') {
-        authHeader = vercelHeaders.authorization;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  // 1a. Check Authorization Bearer ID Token
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const idToken = authHeader.slice('Bearer '.length).trim();
-    if (idToken) {
-      const isReady = await ensureAdminAppInitialized();
-      if (isReady) {
-        try {
-          const { getAuth: getAdminAuth } = await import('firebase-admin/auth');
-          const decoded = await getAdminAuth().verifyIdToken(idToken);
-          return {
-            uid: decoded.uid,
-            email: decoded.email,
-            emailVerified: decoded.email_verified,
-            customClaims: {
-              admin: Boolean(decoded.admin),
-            },
-          };
-        } catch {
-          // Fall through to decoded JWT payload check
-        }
-      }
-
-      const decodedPayload = decodeJwtPayload(idToken);
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
-    }
-  }
-
-  // 2. Support custom session headers (direct or via Vercel sc headers)
-  const sessionUid =
-    req.headers['x-satya-uid'] ||
-    (vercelHeaders && vercelHeaders['x-satya-uid']) ||
-    req.headers['x-user-id'] ||
-    req.headers['x-user-uid'];
-  const sessionEmail =
-    req.headers['x-satya-email'] ||
-    (vercelHeaders && vercelHeaders['x-satya-email']);
-  const sessionVerified =
-    req.headers['x-satya-email-verified'] ||
-    (vercelHeaders && vercelHeaders['x-satya-email-verified']);
-  const sessionAdminClaim =
-    req.headers['x-satya-admin-claim'] ||
-    (vercelHeaders && vercelHeaders['x-satya-admin-claim']);
-
-  if (typeof sessionUid === 'string' && sessionUid.trim().length > 0) {
+  const bearer = typeof req.headers.authorization === 'string' &&
+    req.headers.authorization.startsWith('Bearer ')
+    ? req.headers.authorization.slice(7).trim()
+    : '';
+  // Vercel rewrites should preserve Authorization; signed tokens in request
+  // bodies are supported for older clients without trusting other body fields.
+  const bodyToken = typeof req.body?.idToken === 'string' ? req.body.idToken : '';
+  const token = bearer || bodyToken;
+  if (!token || !(await ensureAdminAppInitialized())) return null;
+  try {
+    const { getAuth } = await import('firebase-admin/auth');
+    const decoded = await getAuth().verifyIdToken(token, true);
     return {
-      uid: sessionUid.trim(),
-      email: typeof sessionEmail === 'string' ? sessionEmail.trim() : undefined,
-      emailVerified: sessionVerified === 'true',
-      customClaims: {
-        admin: sessionAdminClaim === 'true',
-      },
+      uid: decoded.uid,
+      email: decoded.email,
+      emailVerified: decoded.email_verified,
+      customClaims: { admin: decoded.admin === true },
     };
+  } catch {
+    return null;
   }
+}
 
-  // 3. Fallback: Request body (vital for serverless proxies like Vercel that strip custom headers on POST/PUT)
-  const body = req.body;
-  if (body && typeof body === 'object') {
-    if (typeof body.idToken === 'string' && body.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(body.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
+async function getPaymentDb() {
+  if (!(await ensureAdminAppInitialized())) {
+    throw new Error('Firebase Admin service account credentials are missing or invalid.');
+  }
+  const { getApp } = await import('firebase-admin/app');
+  const { getFirestore } = await import('firebase-admin/firestore');
+  // Match the *named* database used by the client, not the default database.
+  const databaseId = process.env.FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId;
+  return getFirestore(getApp(), databaseId);
+}
+
+async function loadStoredOrder(orderId: string): Promise<ServerOrderRecord | null> {
+  if (!/^ord_satya_[a-zA-Z0-9_]+$/.test(orderId)) return null;
+  const db = await getPaymentDb();
+  const doc = await db.collection('orders').doc(orderId).get();
+  return doc.exists ? (doc.data() as ServerOrderRecord) : null;
+}
+
+/** A successful frontend popup or signed webhook is not a payment receipt.
+ * Always confirm both the order AND a successful payment with Cashfree APIs.
+ */
+async function fetchVerifiedCashfreePayment(order: ServerOrderRecord): Promise<string | null> {
+  const appId = cleanEnvString(process.env.CASHFREE_APP_ID);
+  const secret = getCashfreeSecretKey();
+  if (!appId || !secret) throw new Error('Cashfree credentials are not configured.');
+  const cfEnv = cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production'
+    ? 'production' : 'sandbox';
+  const endpoint = cfEnv === 'production'
+    ? 'https://api.cashfree.com/pg/orders'
+    : 'https://sandbox.cashfree.com/pg/orders';
+  const headers = {
+    'x-api-version': process.env.CASHFREE_API_VERSION || '2023-08-01',
+    'x-client-id': appId,
+    'x-client-secret': secret,
+  };
+  const orderResponse = await fetch(`${endpoint}/${encodeURIComponent(order.id)}`, { headers });
+  if (!orderResponse.ok) throw new Error(`Cashfree order verification failed (HTTP ${orderResponse.status})`);
+  const cfOrder = await orderResponse.json() as any;
+  const amountMatches = (a: unknown) => Number.isFinite(Number(a)) &&
+    Math.abs(Number(a) - order.totalAmountInr) < 0.005;
+  if (cfOrder.order_id !== order.id || cfOrder.order_status !== 'PAID' ||
+      cfOrder.order_currency !== 'INR' || !amountMatches(cfOrder.order_amount)) return null;
+  const paymentsResponse = await fetch(
+    `${endpoint}/${encodeURIComponent(order.id)}/payments`, { headers }
+  );
+  if (!paymentsResponse.ok) throw new Error(`Cashfree payment lookup failed (HTTP ${paymentsResponse.status})`);
+  const payments = await paymentsResponse.json() as any;
+  const successfulPayment = Array.isArray(payments) ? payments.find((p: any) =>
+    p.payment_status === 'SUCCESS' && amountMatches(p.payment_amount) &&
+    (!p.payment_currency || p.payment_currency === 'INR') && p.cf_payment_id
+  ) : null;
+  return successfulPayment ? String(successfulPayment.cf_payment_id) : null;
+}
+
+async function fulfillVerifiedPaidOrder(
+  order: ServerOrderRecord, cashfreePaymentId: string
+): Promise<{alreadyProcessed: boolean; entitlementsGranted: ServerEntitlementRecord[]}> {
+  const db = await getPaymentDb();
+  const orderRef = db.collection('orders').doc(order.id);
+  const grants: ServerEntitlementRecord[] = [];
+  let alreadyProcessed = false;
+  await db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(orderRef);
+    if (!snapshot.exists) throw new Error('Payment order no longer exists.');
+    const saved = snapshot.data() as ServerOrderRecord;
+    if (saved.paymentStatus === 'paid') {
+      alreadyProcessed = true;
+      return;
     }
-
-    const bodyUid = body.userId || body.uid || body.customerUid || body.user?.uid;
-    if (typeof bodyUid === 'string' && bodyUid.trim().length > 0) {
-      const bodyEmail =
-        typeof (body.userEmail || body.customerEmail || body.email) === 'string'
-          ? (body.userEmail || body.customerEmail || body.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof bodyEmail === 'string' &&
-        bodyEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: bodyUid.trim(),
-        email: bodyEmail,
-        emailVerified: body.userEmailVerified === true || body.emailVerified === true,
-        customClaims: {
-          admin: Boolean((body.userRole === 'admin' || body.role === 'admin') && isAdminEmail),
-        },
+    const transition = evaluateOrderWebhookTransition({
+      order: saved,
+      cashfreePaymentStatus: 'SUCCESS',
+      paidAmountInr: saved.totalAmountInr,
+      cashfreePaymentId,
+    });
+    if (!transition.shouldUpdateOrder || !transition.shouldGrantEntitlements) {
+      throw new Error('Payment transition rejected.');
+    }
+    tx.update(orderRef, {
+      paymentStatus: 'paid',
+      shipmentStatus: transition.nextShipmentStatus,
+      cashfreePaymentId,
+      updatedAt: new Date().toISOString(),
+    });
+    for (const item of saved.lineItems) {
+      if (!['recorded_course', 'digital_book', 'hybrid_book'].includes(item.format)) continue;
+      const id = `${saved.userId}_${item.productId}`;
+      const record: ServerEntitlementRecord = {
+        id, userId: saved.userId, productId: item.productId,
+        productType: item.type, orderId: saved.id,
+        downloadPath: item.type === 'course'
+          ? `protected/courses/${item.productId}`
+          : `protected/books/${item.productId}/${item.productId}.pdf`,
+        grantedAt: new Date().toISOString(),
       };
+      tx.set(db.collection('entitlements').doc(id), record);
+      grants.push(record);
     }
-  }
+  });
+  return { alreadyProcessed, entitlementsGranted: grants };
+}
 
-  // 4. Fallback: Request query parameters (for GET requests like /api/user/library)
-  const query = req.query;
-  if (query && typeof query === 'object') {
-    if (typeof query.idToken === 'string' && query.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(query.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
-    }
-
-    const queryUid = query.userId || query.uid;
-    if (typeof queryUid === 'string' && queryUid.trim().length > 0) {
-      const queryEmail =
-        typeof (query.userEmail || query.email) === 'string'
-          ? String(query.userEmail || query.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof queryEmail === 'string' &&
-        queryEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: queryUid.trim(),
-        email: queryEmail,
-        emailVerified: query.userEmailVerified === 'true' || query.emailVerified === 'true',
-        customClaims: {
-          admin: Boolean((query.userRole === 'admin' || query.role === 'admin') && isAdminEmail),
-        },
-      };
-    }
-  }
-
-  return null;
+async function recordUnsuccessfulPayment(
+  order: ServerOrderRecord, status: string, amount: number, paymentId: string
+): Promise<void> {
+  const db = await getPaymentDb();
+  const ref = db.collection('orders').doc(order.id);
+  await db.runTransaction(async (tx) => {
+    const doc = await tx.get(ref);
+    if (!doc.exists) return;
+    const saved = doc.data() as ServerOrderRecord;
+    if (saved.paymentStatus === 'paid') return;
+    const transition = evaluateOrderWebhookTransition({
+      order: saved, cashfreePaymentStatus: status,
+      paidAmountInr: amount, cashfreePaymentId: paymentId,
+    });
+    if (transition.shouldUpdateOrder) tx.update(ref, {
+      paymentStatus: transition.nextPaymentStatus,
+      shipmentStatus: transition.nextShipmentStatus,
+      cashfreePaymentId: paymentId,
+      updatedAt: new Date().toISOString(),
+    });
+  });
 }
 
 function cleanEnvString(val?: string): string {
@@ -327,72 +299,6 @@ function getActiveCouponsMap(): Record<string, number> {
     }
   }
   return map;
-}
-
-function fulfillVerifiedPaidOrder(order: ServerOrderRecord, cashfreePaymentId: string): {
-  alreadyProcessed: boolean;
-  entitlementsGranted: ServerEntitlementRecord[];
-} {
-  const transition = evaluateOrderWebhookTransition({
-    order,
-    cashfreePaymentStatus: 'SUCCESS',
-    paidAmountInr: order.totalAmountInr,
-    cashfreePaymentId,
-  });
-
-  if (transition.alreadyProcessed) {
-    const existingGrants = Array.from(serverEntitlements.values()).filter(
-      (e) => e.orderId === order.id
-    );
-    return { alreadyProcessed: true, entitlementsGranted: existingGrants };
-  }
-
-  if (transition.shouldUpdateOrder) {
-    order.paymentStatus = transition.nextPaymentStatus;
-    order.shipmentStatus = transition.nextShipmentStatus;
-    order.cashfreePaymentId = cashfreePaymentId;
-    order.updatedAt = new Date().toISOString();
-    serverOrders.set(order.id, order);
-  }
-
-  if (transition.shouldDecrementStock) {
-    for (const item of order.lineItems) {
-      const prod = serverProducts.get(item.productId);
-      if (prod && (prod.format === 'physical_book' || prod.format === 'hybrid_book')) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-        serverProducts.set(prod.id, prod);
-      }
-    }
-  }
-
-  const granted: ServerEntitlementRecord[] = [];
-  if (transition.shouldGrantEntitlements) {
-    for (const item of order.lineItems) {
-      if (
-        item.format === 'recorded_course' ||
-        item.format === 'digital_book' ||
-        item.format === 'hybrid_book'
-      ) {
-        const entitlementId = `${order.userId}_${item.productId}`;
-        const record: ServerEntitlementRecord = {
-          id: entitlementId,
-          userId: order.userId,
-          productId: item.productId,
-          productType: item.type,
-          orderId: order.id,
-          downloadPath:
-            item.type === 'course'
-              ? `protected/courses/${item.productId}`
-              : `protected/books/${item.productId}/${item.productId}.pdf`,
-          grantedAt: new Date().toISOString(),
-        };
-        serverEntitlements.set(entitlementId, record);
-        granted.push(record);
-      }
-    }
-  }
-
-  return { alreadyProcessed: false, entitlementsGranted: granted };
 }
 
 export function createApiApp() {
@@ -430,100 +336,53 @@ export function createApiApp() {
   // CRITICAL: Cashfree Webhook route MUST read raw request body BEFORE express.json()
   app.post(
     '/api/cashfree/webhook',
-    express.raw({ type: 'application/json' }),
-    (req, res) => {
+    express.raw({ type: 'application/json', limit: '1mb' }),
+    async (req, res) => {
       const signatureHeader = req.headers['x-webhook-signature'] as string | undefined;
       const timestampHeader = req.headers['x-webhook-timestamp'] as string | undefined;
-      const rawBody = Buffer.isBuffer(req.body)
-        ? req.body.toString('utf8')
-        : typeof req.body === 'string'
-        ? req.body
-        : JSON.stringify(req.body || {});
-
-      const secretKey = getCashfreeSecretKey();
-      const isValidSig = verifyCashfreeWebhookSignature({
-        timestampHeader,
-        signatureHeader,
-        rawBody,
-        secretKey,
-      });
-
-      if (!isValidSig) {
-        // Acknowledge Cashfree dashboard verification/test pings without live signatures
-        const isDashboardTest =
-          !signatureHeader ||
-          !timestampHeader ||
-          !secretKey ||
-          rawBody === '' ||
-          rawBody === '{}' ||
-          rawBody.toLowerCase().includes('test') ||
-          rawBody.toLowerCase().includes('ping');
-
-        if (isDashboardTest) {
-          res.status(200).json({
-            status: 'ok',
-            message: 'Cashfree webhook test ping acknowledged successfully.',
-          });
-          return;
-        }
-
-        res.status(401).json({
-          error: 'Invalid Cashfree webhook HMAC-SHA256 signature.',
-        });
+      if (!Buffer.isBuffer(req.body) ||
+          !verifyCashfreeWebhookSignature({
+            timestampHeader, signatureHeader, rawBody: req.body.toString('utf8'),
+            secretKey: getCashfreeSecretKey(),
+          })) {
+        res.status(401).json({error: 'Invalid Cashfree webhook signature.'});
         return;
       }
-
       try {
-        const payload = JSON.parse(rawBody);
-        const cfOrderId = payload?.data?.order?.order_id;
-        const paymentStatusRaw = payload?.data?.payment?.payment_status || 'PENDING';
-        const paymentAmount = Number(payload?.data?.payment?.payment_amount || 0);
-        const cfPaymentId = String(payload?.data?.payment?.cf_payment_id || `cf_pay_${Date.now()}`);
-
-        const order = serverOrders.get(cfOrderId);
+        const payload = JSON.parse(req.body.toString('utf8'));
+        const orderId = String(payload?.data?.order?.order_id || '');
+        const status = String(payload?.data?.payment?.payment_status || '');
+        const amount = Number(payload?.data?.payment?.payment_amount);
+        const currency = String(payload?.data?.payment?.payment_currency || payload?.data?.order?.order_currency || '');
+        const paymentId = String(payload?.data?.payment?.cf_payment_id || '');
+        const order = await loadStoredOrder(orderId);
         if (!order) {
-          res.status(404).json({ error: `Order ${cfOrderId} not found.` });
+          // Let Cashfree retry if order persistence is temporarily unavailable.
+          res.status(404).json({error:'Order not found.'});
           return;
         }
-
-        if (paymentStatusRaw === 'SUCCESS') {
-          const result = fulfillVerifiedPaidOrder(order, cfPaymentId);
-          res.status(200).json({
-            status: 'ok',
-            orderId: order.id,
-            paymentStatus: order.paymentStatus,
-            alreadyProcessed: result.alreadyProcessed,
-            entitlementsGrantedCount: result.entitlementsGranted.length,
-          });
+        if (status === 'SUCCESS') {
+          if (currency !== 'INR' || !Number.isFinite(amount) ||
+              Math.abs(amount - order.totalAmountInr) >= 0.005 || !paymentId) {
+            res.status(400).json({error:'Payment amount, currency, or ID mismatch.'});
+            return;
+          }
+          const verifiedPaymentId = await fetchVerifiedCashfreePayment(order);
+          if (!verifiedPaymentId || verifiedPaymentId !== paymentId) {
+            res.status(503).json({error:'Cashfree has not confirmed this payment.'});
+            return;
+          }
+          const result = await fulfillVerifiedPaidOrder(order, verifiedPaymentId);
+          res.json({status:'ok', orderId:order.id, paid:true, alreadyProcessed:result.alreadyProcessed});
           return;
         }
-
-        const transition = evaluateOrderWebhookTransition({
-          order,
-          cashfreePaymentStatus: paymentStatusRaw,
-          paidAmountInr: paymentAmount,
-          cashfreePaymentId: cfPaymentId,
-        });
-
-        if (transition.shouldUpdateOrder) {
-          order.paymentStatus = transition.nextPaymentStatus;
-          order.shipmentStatus = transition.nextShipmentStatus;
-          order.cashfreePaymentId = cfPaymentId;
-          order.updatedAt = new Date().toISOString();
-          serverOrders.set(order.id, order);
+        if (status === 'FAILED' || status === 'USER_DROPPED') {
+          await recordUnsuccessfulPayment(order, status, amount, paymentId);
         }
-
-        res.status(200).json({
-          status: 'ok',
-          orderId: order.id,
-          paymentStatus: order.paymentStatus,
-          alreadyProcessed: transition.alreadyProcessed,
-          reason: transition.reason,
-        });
+        res.json({status:'ok', orderId:order.id});
       } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : 'Invalid webhook JSON payload.',
-        });
+        console.error('Cashfree webhook processing error:', err);
+        res.status(503).json({error:'Webhook could not be processed; please retry.'});
       }
     }
   );
@@ -604,12 +463,21 @@ export function createApiApp() {
       .map((i) => `${i.title} x${i.quantity} (₹${i.lineTotalInr})`)
       .join(' · ');
 
+    const providedPhone = String(customerPhone || shippingAddress?.phone || '').replace(/[^0-9]/g, '').slice(-10);
+    if (!/^[6-9][0-9]{9}$/.test(providedPhone) || providedPhone === '9876543210') {
+      res.status(400).json({error:'Please enter a valid 10-digit Indian mobile number before paying.'});
+      return;
+    }
+    if (!authCtx.email) {
+      res.status(400).json({error:'Please sign in with an account that has an email address.'});
+      return;
+    }
     const nowIso = new Date().toISOString();
     const newOrder: ServerOrderRecord = {
       id: orderId,
       userId: authCtx.uid,
       customerName: String(customerName || authCtx.email || 'Student').slice(0, 120),
-      customerEmail: String(customerEmail || authCtx.email || 'student@example.com').slice(0, 256),
+      customerEmail: authCtx.email.slice(0, 256),
       totalAmountInr: verifiedCart.totalAmountInr,
       paymentStatus: 'pending',
       shipmentStatus: verifiedCart.hasPhysicalItems ? 'processing' : 'not_applicable',
@@ -630,18 +498,28 @@ export function createApiApp() {
       updatedAt: nowIso,
     };
 
-    serverOrders.set(orderId, newOrder);
+    // Persist pending orders before opening checkout; never use function memory for payments.
+    try {
+      const db = await getPaymentDb();
+      await db.collection('orders').doc(orderId).create(newOrder);
+    } catch (error) {
+      console.error('Could not persist payment order:', error);
+      res.status(503).json({error:'Payment database is unavailable. Please try again later.'});
+      return;
+    }
 
-    // Cashfree Environment Detection: auto-detect production if explicit or if production secret provided
     const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
     const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd =
-      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
-      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
-    const isProdKey = cfSecret.includes('_prod_');
+    // Server configuration, never a browser variable or heuristic, chooses live mode.
+    const cfEnv: 'production' | 'sandbox' =
+      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production'
+        ? 'production' : 'sandbox';
     const isTestKey = cfAppId.startsWith('TEST') || cfSecret.includes('_test_');
 
-    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
+    if (process.env.VERCEL_ENV === 'preview' && cfEnv === 'production') {
+      res.status(503).json({error:'Live Cashfree checkout is blocked on preview deployments. Configure sandbox credentials for testing.'});
+      return;
+    }
 
     if (cfEnv === 'production') {
       if (isTestKey) {
@@ -690,10 +568,7 @@ export function createApiApp() {
               customer_id: authCtx.uid.slice(0, 45),
               customer_name: newOrder.customerName,
               customer_email: newOrder.customerEmail,
-              customer_phone: String(customerPhone || shippingAddress?.phone || '9876543210').replace(
-                /[^0-9]/g,
-                ''
-              ).slice(-10) || '9876543210',
+              customer_phone: providedPhone,
             },
             order_meta: {
               return_url: `${appUrl}/?order_id={order_id}`,
@@ -707,11 +582,15 @@ export function createApiApp() {
             cf_order_id?: string;
             payment_session_id?: string;
           };
+          if (!cfData.payment_session_id) {
+            res.status(502).json({error:'Cashfree returned no payment session.'});
+            return;
+          }
           res.json({
             order: newOrder,
             verifiedCart,
             cashfreeMode: cfEnv,
-            paymentSessionId: cfData.payment_session_id || `session_${orderId}`,
+            paymentSessionId: cfData.payment_session_id,
           });
           return;
         } else {
@@ -731,204 +610,52 @@ export function createApiApp() {
       }
     }
 
-    // A deployed site must never substitute a fake session when Cashfree is
-    // unconfigured or rejects the order. Fail closed instead of presenting
-    // customers with an unusable checkout.
-    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-      res.status(cfAppId && cfSecret ? 502 : 503).json({
-        error: cfAppId && cfSecret
-          ? 'Payment provider could not create the order. Please try again later.'
-          : 'Online payments are temporarily unavailable.',
-      });
-      return;
-    }
-
-    // Return order + sandbox session token for interactive Cashfree checkout verification
-    res.json({
-      order: newOrder,
-      verifiedCart,
-      cashfreeMode: 'sandbox',
-      paymentSessionId: `cf_sandbox_session_${orderId}`,
+    res.status(503).json({
+      error: 'Cashfree credentials are not configured. Online payment is unavailable.',
     });
   });
 
-  // 4. Cashfree Payment Verification & Signed Sandbox Webhook Dispatcher
-  // Never marks an order paid merely because the user reached a success screen;
-  // requires either live Cashfree API check or signed HMAC-SHA256 webhook verification.
+  // 4. Server-side payment verification. Client-provided outcomes are never trusted.
   app.post('/api/cashfree/verify-order', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
-    if (!authCtx || !authCtx.uid) {
-      res.status(401).json({ error: 'Authentication required.' });
+    if (!authCtx) {
+      res.status(401).json({error:'Please sign in again to verify your payment.'});
       return;
     }
-
-    const { orderId, simulatedOutcome } = req.body || {};
-    const order = serverOrders.get(String(orderId || ''));
-    if (!order) {
-      res.status(404).json({ error: 'Order not found.' });
-      return;
-    }
-
-    if (order.userId !== authCtx.uid && !canUserPerformAdminOperation(authCtx)) {
-      res.status(403).json({ error: 'Forbidden: You can only verify your own orders.' });
-      return;
-    }
-
-    // If simulatedOutcome is provided in Sandbox Checkout Modal, dispatch through the real
-    // HMAC-SHA256 webhook verification logic so the exact cryptographic verification path runs
-    if (simulatedOutcome) {
-      // Never accept simulated payment success on a deployed website.
-      if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-        res.status(403).json({ error: 'Simulated payment outcomes are disabled in production.' });
+    const orderId = String(req.body?.orderId || '');
+    try {
+      const order = await loadStoredOrder(orderId);
+      if (!order) {
+        res.status(404).json({error:'Order not found.'});
         return;
       }
-      const outcomeStatus =
-        simulatedOutcome === 'SUCCESS'
-          ? 'SUCCESS'
-          : simulatedOutcome === 'FAILED'
-          ? 'FAILED'
-          : 'USER_DROPPED';
-
-      const cfPaymentId = `cf_pay_${Date.now()}`;
-      const timestamp = String(Date.now());
-      const webhookPayload = JSON.stringify({
-        data: {
-          order: {
-            order_id: order.id,
-            order_amount: order.totalAmountInr,
-            order_currency: 'INR',
-          },
-          payment: {
-            cf_payment_id: cfPaymentId,
-            payment_status: outcomeStatus,
-            payment_amount: order.totalAmountInr,
-            payment_currency: 'INR',
-          },
-        },
-        event_time: new Date().toISOString(),
-        type:
-          outcomeStatus === 'SUCCESS'
-            ? 'PAYMENT_SUCCESS_WEBHOOK'
-            : outcomeStatus === 'FAILED'
-            ? 'PAYMENT_FAILED_WEBHOOK'
-            : 'PAYMENT_USER_DROPPED_WEBHOOK',
-      });
-
-      const secretKey = getCashfreeSecretKey();
-      const signature = computeCashfreeWebhookSignature(timestamp, webhookPayload, secretKey);
-      const signatureValid = verifyCashfreeWebhookSignature({
-        timestampHeader: timestamp,
-        signatureHeader: signature,
-        rawBody: webhookPayload,
-        secretKey,
-      });
-
-      if (!signatureValid) {
-        res.status(400).json({ error: 'Webhook signature self-check failed.' });
+      if (order.userId !== authCtx.uid && !canUserPerformAdminOperation(authCtx)) {
+        res.status(403).json({error:'You can only verify your own orders.'});
         return;
       }
-
-      if (outcomeStatus === 'SUCCESS') {
-        const fulfillment = fulfillVerifiedPaidOrder(order, cfPaymentId);
-        res.json({
-          verified: true,
-          order,
-          alreadyProcessed: fulfillment.alreadyProcessed,
-          entitlements: fulfillment.entitlementsGranted,
-          webhookSignatureVerified: true,
-        });
+      // Even if already paid, the only source of paid status is the server's
+      // transactional state written after Cashfree confirmation.
+      if (order.paymentStatus === 'paid') {
+        res.json({verified:true, order, entitlements:[]});
         return;
       }
-
-      const transition = evaluateOrderWebhookTransition({
-        order,
-        cashfreePaymentStatus: outcomeStatus,
-        paidAmountInr: order.totalAmountInr,
-        cashfreePaymentId: cfPaymentId,
-      });
-
-      if (transition.shouldUpdateOrder) {
-        order.paymentStatus = transition.nextPaymentStatus;
-        order.shipmentStatus = transition.nextShipmentStatus;
-        order.cashfreePaymentId = cfPaymentId;
-        order.updatedAt = new Date().toISOString();
-        serverOrders.set(order.id, order);
+      const paymentId = await fetchVerifiedCashfreePayment(order);
+      if (!paymentId) {
+        res.json({verified:false, order, entitlements:[], message:'Payment is pending or unsuccessful.'});
+        return;
       }
-
+      const result = await fulfillVerifiedPaidOrder(order, paymentId);
+      const updatedOrder = await loadStoredOrder(order.id);
       res.json({
-        verified: false,
-        order,
-        alreadyProcessed: transition.alreadyProcessed,
-        entitlements: [],
-        webhookSignatureVerified: true,
-        reason: transition.reason,
+        verified:updatedOrder?.paymentStatus === 'paid',
+        order:updatedOrder,
+        alreadyProcessed:result.alreadyProcessed,
+        entitlements:result.entitlementsGranted,
       });
-      return;
+    } catch (err) {
+      console.error('Payment status verification failed:', err);
+      res.status(503).json({error:'Unable to check payment status securely. Please try again.'});
     }
-
-    // Direct Cashfree server-to-server check if live credentials are configured
-    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
-    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd =
-      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
-      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
-    const isProdKey = Boolean(cfSecret && cfSecret.includes('_prod_'));
-    const isTestKey = Boolean((cfAppId && cfAppId.startsWith('TEST')) || (cfSecret && cfSecret.includes('_test_')));
-    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
-
-    if (
-      order.paymentStatus !== 'paid' &&
-      cfAppId &&
-      cfSecret &&
-      cfAppId !== 'TEST_YOUR_CASHFREE_APP_ID' &&
-      cfSecret !== 'TEST_YOUR_CASHFREE_SECRET_KEY'
-    ) {
-      try {
-        const checkUrl =
-          cfEnv === 'production'
-            ? `https://api.cashfree.com/pg/orders/${order.id}`
-            : `https://sandbox.cashfree.com/pg/orders/${order.id}`;
-
-        const cfRes = await fetch(checkUrl, {
-          method: 'GET',
-          headers: {
-            'x-api-version': process.env.CASHFREE_API_VERSION || '2023-08-01',
-            'x-client-id': cfAppId,
-            'x-client-secret': cfSecret,
-          },
-        });
-
-        if (cfRes.ok) {
-          const cfOrder = (await cfRes.json()) as any;
-          if (cfOrder && (cfOrder.order_status === 'PAID' || cfOrder.order_status === 'SUCCESS')) {
-            const fulfillment = fulfillVerifiedPaidOrder(
-              order,
-              cfOrder.cf_order_id ? String(cfOrder.cf_order_id) : `cf_live_${Date.now()}`
-            );
-            res.json({
-              verified: true,
-              order,
-              alreadyProcessed: fulfillment.alreadyProcessed,
-              entitlements: fulfillment.entitlementsGranted,
-              webhookSignatureVerified: true,
-            });
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn('Cashfree live order status check error:', err);
-      }
-    }
-
-    // Return current authoritative state of the order (never marks paid on plain GET/POST without verification)
-    const userEntitlements = Array.from(serverEntitlements.values()).filter(
-      (e) => e.userId === order.userId
-    );
-    res.json({
-      verified: order.paymentStatus === 'paid',
-      order,
-      entitlements: userEntitlements,
-    });
   });
 
   // 5. User Orders & Entitlements Endpoint (Strictly Isolated to Authenticated Owner)
@@ -939,18 +666,20 @@ export function createApiApp() {
       return;
     }
 
-    const myOrders = Array.from(serverOrders.values())
-      .filter((o) => o.userId === authCtx.uid)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-
-    const myEntitlements = Array.from(serverEntitlements.values()).filter(
-      (e) => e.userId === authCtx.uid
-    );
-
-    res.json({
-      orders: myOrders,
-      entitlements: myEntitlements,
-    });
+    try {
+      const db = await getPaymentDb();
+      const [orderSnapshot, entitlementSnapshot] = await Promise.all([
+        db.collection('orders').where('userId', '==', authCtx.uid).get(),
+        db.collection('entitlements').where('userId', '==', authCtx.uid).get(),
+      ]);
+      const orders = orderSnapshot.docs.map((d) => d.data() as ServerOrderRecord)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const entitlements = entitlementSnapshot.docs.map((d) => d.data() as ServerEntitlementRecord);
+      res.json({orders, entitlements});
+    } catch (err) {
+      console.error('Could not load payment library:', err);
+      res.status(503).json({error:'Purchase records are temporarily unavailable.'});
+    }
   });
 
   // 6. Protected Content Signed Access Endpoint (Courses & Digital Books)
@@ -968,16 +697,27 @@ export function createApiApp() {
     let lessonObj: CourseLesson | undefined;
     if (lessonId) {
       lessonObj = serverLessons.get(String(lessonId));
-      if (lessonObj && lessonObj.isFreePreview) {
-        isFreePreview = true;
+      if (!lessonObj || lessonObj.courseId !== product.id) {
+        res.status(404).json({error:'Lesson does not belong to this course.'});
+        return;
+      }
+      isFreePreview = lessonObj.isFreePreview;
+    }
+    let userEntitledProductIds: string[] = [];
+    if (authCtx?.uid) {
+      try {
+        const db = await getPaymentDb();
+        const grant = await db.collection('entitlements')
+          .doc(`${authCtx.uid}_${product.id}`).get();
+        if (grant.exists && grant.data()?.userId === authCtx.uid &&
+            grant.data()?.productId === product.id) {
+          userEntitledProductIds = [product.id];
+        }
+      } catch {
+        res.status(503).json({error:'Unable to check purchased content access.'});
+        return;
       }
     }
-
-    const userEntitledProductIds = authCtx?.uid
-      ? Array.from(serverEntitlements.values())
-          .filter((e) => e.userId === authCtx.uid)
-          .map((e) => e.productId)
-      : [];
 
     const accessCheck = canUserAccessProtectedContent({
       auth: authCtx,
@@ -1096,9 +836,16 @@ export function createApiApp() {
       return;
     }
 
-    const allOrders = Array.from(serverOrders.values()).sort((a, b) =>
-      b.createdAt.localeCompare(a.createdAt)
-    );
+    let allOrders: ServerOrderRecord[];
+    try {
+      const db = await getPaymentDb();
+      const orderDocs = await db.collection('orders').get();
+      allOrders = orderDocs.docs.map((d) => d.data() as ServerOrderRecord)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    } catch {
+      res.status(503).json({error:'Unable to load persistent payment records.'});
+      return;
+    }
     const paidOrders = allOrders.filter((o) => o.paymentStatus === 'paid');
     const totalSalesInr = paidOrders.reduce((acc, o) => acc + o.totalAmountInr, 0);
 
@@ -1203,16 +950,28 @@ export function createApiApp() {
 
     if (action === 'update_order') {
       const { orderId, shipmentStatus, paymentStatus } = payload || {};
-      const ord = serverOrders.get(String(orderId || ''));
-      if (!ord) {
-        res.status(404).json({ error: 'Order not found.' });
+      if (paymentStatus !== undefined) {
+        res.status(403).json({error:'Payment status may only be changed by verified Cashfree events.'});
         return;
       }
-      if (shipmentStatus) ord.shipmentStatus = shipmentStatus;
-      if (paymentStatus) ord.paymentStatus = paymentStatus;
-      ord.updatedAt = new Date().toISOString();
-      serverOrders.set(ord.id, ord);
-      res.json({ status: 'ok', order: ord });
+      const statuses = ['not_applicable', 'processing', 'packed', 'shipped', 'delivered'];
+      if (!statuses.includes(shipmentStatus)) {
+        res.status(400).json({error:'Invalid shipment status.'});
+        return;
+      }
+      try {
+        const db = await getPaymentDb();
+        const ref = db.collection('orders').doc(String(orderId || ''));
+        const doc = await ref.get();
+        if (!doc.exists) {
+          res.status(404).json({error:'Order not found.'});
+          return;
+        }
+        await ref.update({shipmentStatus, updatedAt:new Date().toISOString()});
+        res.json({status:'ok', order:{...doc.data(), shipmentStatus}});
+      } catch {
+        res.status(503).json({error:'Unable to update shipment.'});
+      }
       return;
     }
 
