@@ -88,7 +88,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
   } | null>(null);
 
   const [verificationFeedback, setVerificationFeedback] = useState<{
-    status: 'paid' | 'failed' | 'cancelled';
+    status: 'paid' | 'failed' | 'cancelled' | 'pending';
     orderId: string;
     message: string;
   } | null>(null);
@@ -230,7 +230,6 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
       // Automatically launch Cashfree Web Checkout modal if official session is available
       if (
         data.paymentSessionId &&
-        !data.paymentSessionId.startsWith('cf_sandbox_session_') &&
         typeof window !== 'undefined' &&
         (window as any).Cashfree
       ) {
@@ -250,7 +249,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                 );
               } else {
                 // Verify order completion with server
-                handleCompleteCashfreeVerification('SUCCESS');
+                handleCompleteCashfreeVerification(data.order.id);
               }
             });
         } catch (e) {
@@ -266,71 +265,43 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
     }
   };
 
-  const handleCompleteCashfreeVerification = async (
-    simulatedOutcome: 'SUCCESS' | 'FAILED' | 'USER_DROPPED'
-  ) => {
-    if (!activeCashfreeSession || !user) return;
+  const handleCompleteCashfreeVerification = async (orderId: string) => {
+    if (!orderId || !user) return;
     setCheckoutLoading(true);
     setCheckoutError(null);
     try {
       const authHeaders = await getClientAuthHeaders(user);
       const authPayload = await getClientAuthPayload(user);
-
       const res = await fetch('/api/cashfree/verify-order', {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({
-          ...authPayload,
-          orderId: activeCashfreeSession.orderId,
-          simulatedOutcome,
-        }),
+        body: JSON.stringify({...authPayload, orderId}),
       });
-
-      let data: any = null;
-      const text = await res.text();
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error(
-          text && text.length < 200 && !text.includes('<html')
-            ? text
-            : 'Payment verification service error.'
-        );
-      }
-
+      const data = await res.json();
       if (!res.ok) {
-        setCheckoutError(data?.error || 'Payment verification failed.');
+        setCheckoutError(data?.error || 'Payment verification could not complete. Retry checking the payment status.');
         return;
       }
-
-      const currentOrderId = activeCashfreeSession.orderId;
-      setActiveCashfreeSession(null);
-
-      if (data.verified && data.order.paymentStatus === 'paid') {
+      if (data.verified && data.order?.paymentStatus === 'paid') {
+        setActiveCashfreeSession(null);
         onClearCart();
         await onOrderCompleted();
         setVerificationFeedback({
-          status: 'paid',
-          orderId: currentOrderId,
-          message: `Order ${currentOrderId} Confirmed! Cashfree HMAC-SHA256 webhook verified on the server. Your courses and digital books are now unlocked in your User Dashboard.`,
+          status:'paid', orderId,
+          message:`Order ${orderId} confirmed by Cashfree. Your purchased courses and digital books are available in My Dashboard.`,
         });
-      } else if (simulatedOutcome === 'FAILED') {
-        await onOrderCompleted();
-        setVerificationFeedback({
-          status: 'failed',
-          orderId: currentOrderId,
-          message: `Payment for Order ${currentOrderId} was reported as FAILED by Cashfree. No entitlements were granted and your cart items remain saved.`,
-        });
+      } else if (data.order?.paymentStatus === 'failed') {
+        setVerificationFeedback({status:'failed', orderId,
+          message:'Cashfree reports the payment failed. No purchase access has been granted.'});
+      } else if (data.order?.paymentStatus === 'cancelled') {
+        setVerificationFeedback({status:'cancelled', orderId,
+          message:'The payment was cancelled. Your cart is saved; you can try again.'});
       } else {
-        await onOrderCompleted();
-        setVerificationFeedback({
-          status: 'cancelled',
-          orderId: currentOrderId,
-          message: `Payment for Order ${currentOrderId} was cancelled by the user. You can retry checkout at any time.`,
-        });
+        setVerificationFeedback({status:'pending', orderId,
+          message:'Payment is not confirmed yet. If you paid, check again shortly. Do not pay twice.'});
       }
     } catch (err) {
-      setCheckoutError(err instanceof Error ? err.message : 'Verification error.');
+      setCheckoutError(err instanceof Error ? err.message : 'Payment verification unavailable.');
     } finally {
       setCheckoutLoading(false);
     }
@@ -792,7 +763,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
               </p>
             </div>
 
-            {!activeCashfreeSession.paymentSessionId.startsWith('cf_sandbox_session_') && (
+            {(
               <button
                 type="button"
                 disabled={checkoutLoading}
@@ -813,7 +784,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                         if (result && result.error) {
                           setCheckoutError(result.error.message || 'Payment cancelled.');
                         } else {
-                          handleCompleteCashfreeVerification('SUCCESS');
+                          handleCompleteCashfreeVerification(activeCashfreeSession.orderId);
                         }
                       });
                   }
@@ -825,39 +796,18 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
             )}
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              Select a payment outcome below to dispatch a signed Cashfree webhook (
-              <code className="font-mono-tabular text-[11px] bg-slate-100 px-1 py-0.5 rounded">
-                x-webhook-signature
-              </code>{' '}
-              + raw body HMAC-SHA256) to the backend verification endpoint:
+              Payment status is confirmed on the server directly with Cashfree.
+              Closing the payment window does not mean payment succeeded. If you have paid,
+              use the button below to refresh your payment status.
             </p>
-
-            <div className="space-y-2.5">
-              <button
-                type="button"
-                disabled={checkoutLoading}
-                onClick={() => handleCompleteCashfreeVerification('SUCCESS')}
-                className="w-full py-2.5 px-4 bg-emerald-700 text-white text-xs font-semibold rounded-lg hover:bg-emerald-800 transition-colors"
-              >
-                Authorize Verified Success (UPI / Card / NetBanking)
-              </button>
-              <button
-                type="button"
-                disabled={checkoutLoading}
-                onClick={() => handleCompleteCashfreeVerification('FAILED')}
-                className="w-full py-2 px-4 border border-red-300 text-red-700 text-xs font-semibold rounded-lg hover:bg-red-50 transition-colors"
-              >
-                Simulate Failed Payment (Bank Declined)
-              </button>
-              <button
-                type="button"
-                disabled={checkoutLoading}
-                onClick={() => handleCompleteCashfreeVerification('USER_DROPPED')}
-                className="w-full py-2 px-4 border border-slate-300 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors"
-              >
-                Cancel / User Dropped Checkout
-              </button>
-            </div>
+            <button
+              type="button"
+              disabled={checkoutLoading}
+              onClick={() => handleCompleteCashfreeVerification(activeCashfreeSession.orderId)}
+              className="w-full py-2.5 px-4 bg-emerald-700 text-white text-xs font-semibold rounded-lg hover:bg-emerald-800 disabled:opacity-50"
+            >
+              {checkoutLoading ? 'Verifying payment...' : 'Check Cashfree Payment Status'}
+            </button>
           </div>
         </div>
       )}
