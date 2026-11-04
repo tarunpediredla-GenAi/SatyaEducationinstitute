@@ -866,7 +866,7 @@ async function resolveServerAuthContext(req) {
   return null;
 }
 function getCashfreeSecretKey() {
-  return process.env.CASHFREE_SECRET_KEY || "cf_sandbox_secret_satya_edu_2026";
+  return process.env.CASHFREE_SECRET_KEY || "";
 }
 function getActiveCouponsMap() {
   const map = {};
@@ -1164,6 +1164,12 @@ function createApiApp() {
         }
       }
     }
+    if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+      res.status(cfAppId && cfSecret ? 502 : 503).json({
+        error: cfAppId && cfSecret ? "Payment provider could not create the order. Please try again later." : "Online payments are temporarily unavailable."
+      });
+      return;
+    }
     res.json({
       order: newOrder,
       verifiedCart,
@@ -1188,6 +1194,10 @@ function createApiApp() {
       return;
     }
     if (simulatedOutcome) {
+      if (process.env.VERCEL || process.env.NODE_ENV === "production") {
+        res.status(403).json({ error: "Simulated payment outcomes are disabled in production." });
+        return;
+      }
       const outcomeStatus = simulatedOutcome === "SUCCESS" ? "SUCCESS" : simulatedOutcome === "FAILED" ? "FAILED" : "USER_DROPPED";
       const cfPaymentId = `cf_pay_${Date.now()}`;
       const timestamp = String(Date.now());
