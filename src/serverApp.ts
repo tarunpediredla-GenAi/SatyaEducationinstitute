@@ -507,6 +507,18 @@ export function createApiApp() {
       }
     }
 
+    // A deployed site must never substitute a fake session when Cashfree is
+    // unconfigured or rejects the order. Fail closed instead of presenting
+    // customers with an unusable checkout.
+    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+      res.status(cfAppId && cfSecret ? 502 : 503).json({
+        error: cfAppId && cfSecret
+          ? 'Payment provider could not create the order. Please try again later.'
+          : 'Online payments are temporarily unavailable.',
+      });
+      return;
+    }
+
     // Return order + sandbox session token for interactive Cashfree checkout verification
     res.json({
       order: newOrder,
