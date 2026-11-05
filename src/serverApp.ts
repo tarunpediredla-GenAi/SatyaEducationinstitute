@@ -83,7 +83,7 @@ const serverEntitlements = new Map<string, ServerEntitlementRecord>();
  * No request headers, JSON bodies or query strings can grant an identity/role.
  */
 async function resolveServerAuthContext(req: express.Request): Promise<AuthTokenContext | null> {
-  const match = /^Bearer\\s+(.+)$/i.exec(req.headers.authorization || '');
+  const match = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
   if (!match) return null;
 
   try {
