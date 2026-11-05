@@ -133,15 +133,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             403 Forbidden — Administrator Authorization Required
           </h1>
           <p className="text-sm text-slate-600 max-w-xl mx-auto leading-relaxed">
-            Admin routes and Firestore security rules strictly enforce Firebase Custom Claims (
-            <code className="font-mono-tabular text-xs bg-slate-100 px-1.5 py-0.5 rounded">
-              token.admin == true
-            </code>
-            ) or a verified record in{' '}
-            <code className="font-mono-tabular text-xs bg-slate-100 px-1.5 py-0.5 rounded">
-              /admins/&#123;uid&#125;
-            </code>
-            . Standard student accounts cannot access or mutate admin resources.
+            Administrator privileges are required to view or manage catalog items, orders, and
+            store settings. Standard student accounts cannot access or modify admin resources.
           </p>
           <div className="pt-2">
             <button
@@ -210,13 +203,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           <div>
             <div className="flex items-center gap-2 text-xs font-mono-tabular text-[#D4AF37]">
               <ShieldCheck className="w-4 h-4" />
-              <span>PROTECTED ADMIN CONSOLE · SERVER & FIRESTORE RBAC</span>
+              <span>ADMINISTRATION CONSOLE</span>
             </div>
             <h1 className="font-display text-xl sm:text-2xl font-bold mt-1">
               Satya’s Education — Storefront & Curriculum Administration
             </h1>
             <p className="text-xs text-slate-300 mt-1">
-              Authenticated Admin: {user.email} · Custom Claim Verified
+              Authenticated Admin: {user.email}
             </p>
           </div>
         </div>
@@ -290,7 +283,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 {paidOrders.length} / {adminOrders.length}
               </p>
               <span className="text-[11px] text-slate-500 mt-1 block">
-                Cashfree webhook verified
+                Confirmed store orders
               </span>
             </div>
 
@@ -687,7 +680,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
             <div>
               <label htmlFor="admin-lesson-path" className="block text-xs font-semibold mb-1">
-                Firebase Storage Recording Path (MP4/WebM, max 500MB)
+                Video Recording URL or Path (MP4/WebM)
               </label>
               <input
                 id="admin-lesson-path"

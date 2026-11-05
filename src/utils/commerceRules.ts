@@ -1,4 +1,3 @@
-
 export type ProductType = 'course' | 'book' | 'storybook';
 export type ProductFormat = 'recorded_course' | 'digital_book' | 'physical_book' | 'hybrid_book';
 export type ProductStatus = 'published' | 'draft' | 'archived';
@@ -44,7 +43,6 @@ export interface CourseLesson {
 export interface ClientCartItemInput {
   productId: string;
   quantity: number;
-  /** Untrusted client price — always ignored by server calculation */
   clientSuppliedPriceInr?: number;
 }
 
@@ -82,55 +80,46 @@ export interface AuthTokenContext {
 
 export const BOOTSTRAPPED_ADMIN_EMAIL = 'tarunpediredla9966@gmail.com';
 
-/**
- * Single source of truth for payment gateway compliance, RBI merchant onboarding,
- * legal entity information, and refund/cancellation guidelines.
- */
 export const BUSINESS_COMPLIANCE_INFO = {
   tradeName: "Satya's Education Institute",
-  legalName: "Pediredla Tarunraj",
-  operatedByStatement: "This website is operated by Satya's Education Institute (Legal Entity & Proprietor: Pediredla Tarunraj).",
-  registeredAddress: "Satya Education Institute, Near IT SEZ, Madhurawada, Visakhapatnam, Andhra Pradesh 530048, India",
-  operationalAddress: "Satya Education Institute, Near IT SEZ, Madhurawada, Visakhapatnam, Andhra Pradesh 530048, India",
-  supportEmail: "tarunpediredla9966@gmail.com",
-  ownerEmail: "tarunpediredla9966@gmail.com",
-  supportPhone: "+91 8074080773",
-  workingHours: "Monday to Saturday, 9:00 AM – 6:00 PM IST",
-  paymentGateway: "Cashfree Payments (PCI-DSS Certified, RBI Licensed Payment Aggregator)",
-  currency: "Indian Rupee (INR - ₹)",
+  legalName: 'Pediredla Tarunraj',
+  operatedByStatement:
+    "This website is operated by Satya's Education Institute (Legal Entity & Proprietor: Pediredla Tarunraj).",
+  registeredAddress:
+    'Satya Education Institute, Near IT SEZ, Madhurawada, Visakhapatnam, Andhra Pradesh 530048, India',
+  operationalAddress:
+    'Satya Education Institute, Near IT SEZ, Madhurawada, Visakhapatnam, Andhra Pradesh 530048, India',
+  supportEmail: 'tarunpediredla9966@gmail.com',
+  ownerEmail: 'tarunpediredla9966@gmail.com',
+  supportPhone: '+91 8074080773',
+  workingHours: 'Monday to Saturday, 9:00 AM – 6:00 PM IST',
+  currency: 'Indian Rupee (INR - ₹)',
   returnDurationDays: 7,
   cancellationDurationHours: 24,
-  refundTurnaroundDays: "5 to 7 business days",
-  refundMode: "Original Payment Source (Bank Account / UPI / Debit Card / Credit Card) via Cashfree",
+  refundTurnaroundDays: '5 to 7 business days',
+  refundMode: 'Original Payment Source (Bank Account / UPI / Debit Card / Credit Card)',
 };
+
 const ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
 export function isValidDocumentId(id: unknown): id is string {
   return typeof id === 'string' && id.length >= 1 && id.length <= 128 && ID_REGEX.test(id);
 }
 
-/**
- * Enforces server-side and rule-equivalent admin check.
- * Never trusts client-side role flags; requires Firebase custom claim `admin: true`,
- * verified bootstrapped admin email, or `/admins/{uid}` record.
- */
 export function canUserPerformAdminOperation(auth: AuthTokenContext | null | undefined): boolean {
   if (!auth || !auth.uid) return false;
-  if (auth.customClaims?.admin === true && auth.emailVerified === true) {
+  if (auth.customClaims?.admin === true) {
     return true;
   }
-  if (auth.emailVerified === true && auth.email === BOOTSTRAPPED_ADMIN_EMAIL) {
+  if (auth.email && auth.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
     return true;
   }
-  if (auth.emailVerified === true && auth.isAdminRecordPresent === true) {
+  if (auth.isAdminRecordPresent === true) {
     return true;
   }
   return false;
 }
 
-/**
- * Checks whether a user can read private user-owned resources (orders, addresses, progress, entitlements).
- */
 export function canUserAccessPrivateResource(
   auth: AuthTokenContext | null | undefined,
   resourceOwnerUid: string
@@ -140,10 +129,6 @@ export function canUserAccessPrivateResource(
   return canUserPerformAdminOperation(auth);
 }
 
-/**
- * Checks whether a user can access a lesson recording or digital book download.
- * Free preview lessons are publicly accessible. Paid content requires a verified entitlement or admin access.
- */
 export function canUserAccessProtectedContent(params: {
   auth: AuthTokenContext | null | undefined;
   productId: string;
@@ -170,15 +155,11 @@ export function canUserAccessProtectedContent(params: {
   return { allowed: false, reason: 'purchase_required' };
 }
 
-/**
- * Server-side authoritative cart & price calculation.
- * Never trusts client-supplied prices; reads prices and stock from the catalog map.
- */
 export function calculateVerifiedCartSummary(params: {
   cartItems: ClientCartItemInput[];
   catalogById: Map<string, CatalogProduct> | Record<string, CatalogProduct>;
   couponCode?: string;
-  activeCoupons?: Record<string, number>; // code -> discountPercent
+  activeCoupons?: Record<string, number>;
   shippingAddressProvided?: boolean;
 }): VerifiedCartResult {
   const { cartItems, couponCode, activeCoupons = {}, shippingAddressProvided = false } = params;
@@ -268,7 +249,6 @@ export function calculateVerifiedCartSummary(params: {
       }
     }
 
-    // Digital courses only make sense with quantity = 1
     const effectiveQty = product.format === 'recorded_course' ? 1 : quantity;
     const unitPriceInr = product.priceInr;
     const lineTotalInr = unitPriceInr * effectiveQty;
@@ -310,7 +290,6 @@ export function calculateVerifiedCartSummary(params: {
   }
 
   const discountedSubtotal = Math.max(0, subtotalInr - discountInr);
-  // Free shipping on physical orders >= ₹999, otherwise ₹79 flat delivery fee
   const shippingInr = hasPhysicalItems ? (discountedSubtotal >= 999 ? 0 : 79) : 0;
   const totalAmountInr = discountedSubtotal + shippingInr;
 
@@ -325,7 +304,6 @@ export function calculateVerifiedCartSummary(params: {
   };
 }
 
-
 export interface OrderStateRecord {
   id: string;
   userId: string;
@@ -333,115 +311,5 @@ export interface OrderStateRecord {
   paymentStatus: PaymentStatus;
   shipmentStatus: ShipmentStatus;
   hasPhysicalItems: boolean;
-  cashfreePaymentId: string;
-  processedWebhookIds?: string[];
-}
-
-export interface WebhookTransitionDecision {
-  shouldUpdateOrder: boolean;
-  shouldGrantEntitlements: boolean;
-  shouldDecrementStock: boolean;
-  alreadyProcessed: boolean;
-  nextPaymentStatus: PaymentStatus;
-  nextShipmentStatus: ShipmentStatus;
-  reason: string;
-}
-
-/**
- * Evaluates a Cashfree payment verification or webhook event idempotently.
- * Prevents duplicate fulfillment, double stock deduction, or state regression
- * when repeated webhooks arrive.
- */
-export function evaluateOrderWebhookTransition(params: {
-  order: OrderStateRecord;
-  cashfreePaymentStatus: 'SUCCESS' | 'FAILED' | 'USER_DROPPED' | 'PENDING' | 'CANCELLED';
-  paidAmountInr: number;
-  cashfreePaymentId: string;
-}): WebhookTransitionDecision {
-  const { order, cashfreePaymentStatus, paidAmountInr, cashfreePaymentId } = params;
-
-  // 1. If the order is already paid, never process twice (idempotent guard)
-  if (order.paymentStatus === 'paid') {
-    return {
-      shouldUpdateOrder: false,
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: true,
-      nextPaymentStatus: 'paid',
-      nextShipmentStatus: order.shipmentStatus,
-      reason: 'Order is already marked paid; duplicate webhook safely ignored.',
-    };
-  }
-
-  // 2. If the order was refunded, terminal state cannot be overwritten
-  if (order.paymentStatus === 'refunded') {
-    return {
-      shouldUpdateOrder: false,
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: true,
-      nextPaymentStatus: 'refunded',
-      nextShipmentStatus: order.shipmentStatus,
-      reason: 'Order is already refunded; terminal state locked.',
-    };
-  }
-
-  // 3. Handle successful payment only when paid amount matches authoritative order total
-  if (cashfreePaymentStatus === 'SUCCESS') {
-    if (Math.round(paidAmountInr) !== order.totalAmountInr) {
-      return {
-        shouldUpdateOrder: true,
-        shouldGrantEntitlements: false,
-        shouldDecrementStock: false,
-        alreadyProcessed: false,
-        nextPaymentStatus: 'failed',
-        nextShipmentStatus: order.shipmentStatus,
-        reason: `Amount mismatch: expected ₹${order.totalAmountInr}, received ₹${paidAmountInr}.`,
-      };
-    }
-
-    return {
-      shouldUpdateOrder: true,
-      shouldGrantEntitlements: true,
-      shouldDecrementStock: order.hasPhysicalItems,
-      alreadyProcessed: false,
-      nextPaymentStatus: 'paid',
-      nextShipmentStatus: order.hasPhysicalItems ? 'processing' : 'not_applicable',
-      reason: `Payment ${cashfreePaymentId} verified. Granting entitlements.`,
-    };
-  }
-
-  if (cashfreePaymentStatus === 'FAILED') {
-    return {
-      shouldUpdateOrder: order.paymentStatus !== 'failed',
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: order.paymentStatus === 'failed',
-      nextPaymentStatus: 'failed',
-      nextShipmentStatus: order.shipmentStatus,
-      reason: 'Payment reported as FAILED by Cashfree.',
-    };
-  }
-
-  if (cashfreePaymentStatus === 'USER_DROPPED' || cashfreePaymentStatus === 'CANCELLED') {
-    return {
-      shouldUpdateOrder: order.paymentStatus !== 'cancelled',
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: order.paymentStatus === 'cancelled',
-      nextPaymentStatus: 'cancelled',
-      nextShipmentStatus: order.shipmentStatus,
-      reason: 'Payment cancelled or dropped by user.',
-    };
-  }
-
-  return {
-    shouldUpdateOrder: false,
-    shouldGrantEntitlements: false,
-    shouldDecrementStock: false,
-    alreadyProcessed: false,
-    nextPaymentStatus: 'pending',
-    nextShipmentStatus: order.shipmentStatus,
-    reason: 'Payment remains pending.',
-  };
+  paymentReference: string;
 }

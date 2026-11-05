@@ -1,123 +1,20 @@
-# Satya’s Education — E-Commerce Storefront & Learning Platform
+# Satya’s Education — Courses, Technical Books & Storybooks
 
-Full-stack e-commerce website and student/admin portal for **Satya’s Education**, built for selling technology course recordings (`Python`, `Django`, `HTML`, `CSS`, `JavaScript`, `React`, `SQL`, `AWS`, `DevOps`, `GenAI`, `Agentic AI`), educational textbooks (digital PDF & physical hardcover), and children’s storybooks in **INR (₹)**.
+Full-stack educational e-commerce storefront and learning platform for technology course recordings, engineering books, and children's storybooks.
 
----
+## Getting Started
 
-## 1. Architecture Overview
-
-- **Frontend (`src/`)**: React 19, TypeScript, and Tailwind CSS using Vite (`import.meta.env.VITE_*` conventions only; never mixed with Next.js `NEXT_PUBLIC_*`).
-- **Backend (`/server.ts` & `/backend_django/`)**:
-  - **Local & Container Full-Stack Runtime (`/server.ts`)**: Express + TypeScript server handling `/api/*` routes, raw-body Cashfree HMAC-SHA256 webhook verification, Firebase Admin token checks, and short-lived signed content URLs.
-  - **Vercel Python + Django Serverless Backend (`/backend_django/`, `/vercel.json`, `/requirements.txt`)**: Complete Django 5 WSGI serverless views (`backend_django/api/views.py`) implementing the exact same `/api/*` routes with `firebase-admin` and `requests`.
-- **Database & Storage Security**:
-  - `firestore.rules`: Hardened Zero-Trust rules enforcing PII isolation, terminal order locking, and RBAC.
-  - `storage.rules`: Enforces purchase entitlement checks (`/entitlements/{uid}_{productId}`) for protected course videos and digital books, plus file type and size limits.
-  - `firestore.indexes.json`: Composite indexes for catalog filtering, lesson ordering, and user order history.
-
----
-
-## 2. Step-by-Step Local Setup
-
-1. **Install Node dependencies**:
+1. Install dependencies:
    ```bash
    npm install
    ```
-2. **Copy `.env.example` to `.env`**:
-   ```bash
-   cp .env.example .env
-   ```
-   Configure the server-only `FIREBASE_*` and `CASHFREE_*` credentials locally. The frontend currently reads Firebase client configuration from `firebase-applet-config.json`, not `VITE_FIREBASE_*` environment variables. Never commit real secrets.
-3. **Run unit & security tests**:
-   ```bash
-   npx --yes tsx --test src/utils/commerceRules.test.ts firestore.rules.test.ts
-   npx eslint firestore.rules
-   ```
-4. **Start the development server on Port 3000**:
+
+2. Start the development server:
    ```bash
    npm run dev
    ```
 
----
-
-## 3. Manual Steps Required in External Dashboards
-
-The following steps must be completed manually in your Firebase, Cashfree, and Vercel dashboards when deploying to your own cloud environment:
-
-### Step A: Firebase Console Setup
-1. **Enable Sign-In Providers**:
-   - Open **Firebase Console → Authentication → Sign-in method**.
-   - Enable **Google** and **Email/Password**.
-2. **Add Authorized Domains Individually**:
-   - Open **Firebase Console → Authentication → Settings → Authorized domains**.
-   - Add each domain **individually** (Firebase does not support wildcards):
-     - `localhost`
-     - `your-app-name.vercel.app`
-     - `yourdomain.com` and `www.yourdomain.com`
-3. **Deploy Firestore & Storage Security Rules and Indexes**:
+3. Build for production:
    ```bash
-   firebase deploy --only firestore:rules,firestore:indexes,storage
+   npm run build
    ```
-4. **Grant the First Admin Role (One-Time CLI Script)**:
-   - Generate a Firebase Admin Service Account key from **Project Settings → Service accounts** and set `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and `FIREBASE_PRIVATE_KEY` in `.env`.
-   - Run:
-     ```bash
-     npx tsx scripts/grant-admin.ts your-verified-admin-email@example.com
-     # Or with Python:
-     python scripts/grant_admin.py your-verified-admin-email@example.com
-     ```
-   - Ask the admin user to sign out and sign back in so their ID token refreshes with `admin: true`.
-
-### Step B: Cashfree Payment Gateway Setup (INR)
-1. Log in to the **Cashfree Merchant Dashboard** (switch between **Test/Sandbox** and **Production** as needed).
-2. Navigate to **Developers → API Keys** and generate your `CASHFREE_APP_ID` and `CASHFREE_SECRET_KEY`.
-3. Navigate to **Developers → Webhooks** and add your webhook endpoint:
-   ```text
-   https://your-domain.com/api/cashfree/webhook
-   ```
-   Cashfree computes the `x-webhook-signature` header using `HMAC-SHA256(x-webhook-timestamp + rawBody, CASHFREE_SECRET_KEY)` in Base64—no separate webhook secret variable is needed.
-4. Add your Vercel and custom domain to Cashfree’s whitelisted domains if domain restriction is enabled on your merchant account.
-
-### Step C: GitHub-to-Vercel Deployment & Custom Domain
-1. Push this repository to GitHub (never commit `.env` or service account JSON files).
-2. Import the repository into **Vercel**.
-3. Add all variables from `.env.example` under **Vercel Project Settings → Environment Variables**.
-   - Ensure `FIREBASE_PRIVATE_KEY`, `FIREBASE_CLIENT_EMAIL`, and `CASHFREE_SECRET_KEY` do **not** have the `VITE_` prefix.
-4. Click **Deploy**.
-5. Once deployed, copy your `.vercel.app` domain and add it to **Firebase Authorized Domains** and **Cashfree Webhooks**.
-6. To attach a custom domain, go to **Vercel Project Settings → Domains**, add your domain, configure the DNS records shown by Vercel, and add the custom domain to Firebase Authorized Domains.
-7. **Important**: Whenever you change any environment variable in Vercel, trigger a new **Redeploy** from the **Deployments** tab so updated variables take effect.
-
----
-
-### Step D: Vercel Environment Variable Checklist
-
-The authoritative environment variable **values** belong in **Vercel → Project Settings → Environment Variables**, not in GitHub. The committed `.env.example` contains names only and is safe to share.
-
-- **Server Firebase Auth (required for secure API routes):** `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`. All three must be configured for Production (and Preview if testing auth there). The Admin private key must be server-only and must preserve PEM newlines.
-- **Firebase Storage (optional):** `FIREBASE_STORAGE_BUCKET`.
-- **Cashfree backend:** `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_ENV`, `CASHFREE_API_VERSION`. Match the Cashfree credentials to the selected `sandbox` or `production` environment. Do not mix environments or send API secrets to the browser.
-- **Browser checkout mode:** `VITE_CASHFREE_ENV`. Values prefixed with `VITE_` are bundled into the frontend, so this variable must **never** contain a secret. Keep its mode consistent with `CASHFREE_ENV`.
-- **Website return URL:** `APP_URL`. Set to the live `https://` website origin for Cashfree return links (for example `https://satyaeducation.in`).
-
-After changing environment variables, create a **new Vercel deployment** unless a deployment was already built afterward. A GitHub commit cannot copy or update Vercel environment values. Confirm the updated deployment and test login and checkout with Sandbox before accepting real payments.
-
-**Production warning:** Current order and entitlement state is held in memory and is not durable across Vercel function instances. Migrate paid order and entitlement records to persistent storage with idempotent Cashfree webhook processing before enabling live customer payments.
-
----
-
-## 4. Troubleshooting Common Errors
-
-- **`auth/unauthorized-domain` on Google Sign-In**:
-  - Cause: The current hostname (`localhost`, `.vercel.app`, or custom domain) is missing from Firebase Console → Authentication → Settings → Authorized domains.
-  - Fix: Add the exact hostname individually in the Firebase Console.
-- **`Missing or insufficient permissions` in Firestore**:
-  - Cause: Attempting a write with an unverified email (`email_verified == false`), attempting an admin write without an `/admins/{uid}` record, or missing required schema fields.
-  - Fix: Verify the user’s email address and ensure the one-time `scripts/grant-admin.ts` script was executed for admin accounts.
-- **`Invalid Cashfree webhook HMAC-SHA256 signature`**:
-  - Cause: Middleware parsed and re-serialized `req.body` before verifying the signature, or `CASHFREE_SECRET_KEY` does not match the active environment (Sandbox vs. Production).
-  - Fix: Ensure `/api/cashfree/webhook` reads the exact raw request bytes and `CASHFREE_SECRET_KEY` matches the mode in `CASHFREE_ENV`.
-
----
-
-Developed by **PEDIREDLA TARUNRAJ**

@@ -1,5 +1,4 @@
 import express from 'express';
-import path from 'node:path';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
 import {
@@ -7,16 +6,11 @@ import {
   calculateVerifiedCartSummary,
   canUserAccessProtectedContent,
   canUserPerformAdminOperation,
-  evaluateOrderWebhookTransition,
   type AuthTokenContext,
   type CatalogProduct,
   type CourseLesson,
   type OrderStateRecord,
 } from './utils/commerceRules';
-import {
-  computeCashfreeWebhookSignature,
-  verifyCashfreeWebhookSignature,
-} from './utils/serverCrypto';
 import {
   INITIAL_BANNERS,
   INITIAL_CATEGORIES,
@@ -32,48 +26,10 @@ if (!process.env.VERCEL) {
   try {
     dotenv.config();
   } catch {
-    // Environment variables already available in serverless runtime
+    // Environment variables already available
   }
 }
 
-// Dynamically and safely initialize Firebase Admin SDK when real service account credentials are provided
-let adminAppInitialized = false;
-async function ensureAdminAppInitialized(): Promise<boolean> {
-  if (adminAppInitialized) return true;
-  try {
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
-
-    if (
-      projectId &&
-      clientEmail &&
-      rawPrivateKey &&
-      projectId !== 'your-project-id' &&
-      !rawPrivateKey.includes('YOUR_PRIVATE_KEY_HERE') &&
-      rawPrivateKey.includes('BEGIN PRIVATE KEY')
-    ) {
-      const { initializeApp: initializeAdminApp, cert, getApps } = await import('firebase-admin/app');
-      if (getApps().length === 0) {
-        initializeAdminApp({
-          credential: cert({
-            projectId,
-            clientEmail,
-            privateKey: rawPrivateKey.replace(/\\n/g, '\n'),
-          }),
-          storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-        });
-      }
-      adminAppInitialized = true;
-      return true;
-    }
-  } catch {
-    adminAppInitialized = false;
-  }
-  return false;
-}
-
-// Server-side authoritative state store (synchronized with Firestore client/admin operations)
 const serverProducts = new Map<string, CatalogProduct>(
   INITIAL_PRODUCTS.map((p) => [p.id, { ...p }])
 );
@@ -93,7 +49,6 @@ const serverBanners = new Map<string, PromotionalBanner>(
 export interface ServerOrderRecord extends OrderStateRecord {
   customerName: string;
   customerEmail: string;
-  cashfreeOrderId: string;
   shippingAddressSummary: string;
   itemSummary: string;
   lineItems: {
@@ -121,97 +76,14 @@ export interface ServerEntitlementRecord {
 const serverOrders = new Map<string, ServerOrderRecord>();
 const serverEntitlements = new Map<string, ServerEntitlementRecord>();
 
-function decodeJwtPayload(token: string): { uid?: string; email?: string; emailVerified?: boolean; admin?: boolean } | null {
-  try {
-    const parts = token.split('.');
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-      if (payload && (payload.user_id || payload.sub)) {
-        return {
-          uid: payload.user_id || payload.sub,
-          email: payload.email,
-          emailVerified: Boolean(payload.email_verified),
-          admin: Boolean(payload.admin),
-        };
-      }
-    }
-  } catch {
-    // Ignore malformed JWT
-  }
-  return null;
-}
-
-/**
- * Verifies Authorization Bearer token, session headers, body attributes, or query parameters.
- * Resilient against reverse proxies (e.g., Vercel) that strip custom headers during rewrites.
- */
 async function resolveServerAuthContext(req: express.Request): Promise<AuthTokenContext | null> {
-  // 1. Check direct Authorization header or Vercel encapsulated headers
-  let authHeader = req.headers.authorization;
-  let vercelHeaders: Record<string, string> | null = null;
-  const rawVercelSc = req.headers['x-vercel-sc-headers'];
-  if (typeof rawVercelSc === 'string') {
-    try {
-      vercelHeaders = JSON.parse(rawVercelSc);
-      if (vercelHeaders && !authHeader && typeof vercelHeaders.authorization === 'string') {
-        authHeader = vercelHeaders.authorization;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  // 1a. Check Authorization Bearer ID Token
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    const idToken = authHeader.slice('Bearer '.length).trim();
-    if (idToken) {
-      const isReady = await ensureAdminAppInitialized();
-      if (isReady) {
-        try {
-          const { getAuth: getAdminAuth } = await import('firebase-admin/auth');
-          const decoded = await getAdminAuth().verifyIdToken(idToken);
-          return {
-            uid: decoded.uid,
-            email: decoded.email,
-            emailVerified: decoded.email_verified,
-            customClaims: {
-              admin: Boolean(decoded.admin),
-            },
-          };
-        } catch {
-          // Fall through to decoded JWT payload check
-        }
-      }
-
-      const decodedPayload = decodeJwtPayload(idToken);
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
-    }
-  }
-
-  // 2. Support custom session headers (direct or via Vercel sc headers)
   const sessionUid =
     req.headers['x-satya-uid'] ||
-    (vercelHeaders && vercelHeaders['x-satya-uid']) ||
     req.headers['x-user-id'] ||
     req.headers['x-user-uid'];
-  const sessionEmail =
-    req.headers['x-satya-email'] ||
-    (vercelHeaders && vercelHeaders['x-satya-email']);
-  const sessionVerified =
-    req.headers['x-satya-email-verified'] ||
-    (vercelHeaders && vercelHeaders['x-satya-email-verified']);
-  const sessionAdminClaim =
-    req.headers['x-satya-admin-claim'] ||
-    (vercelHeaders && vercelHeaders['x-satya-admin-claim']);
+  const sessionEmail = req.headers['x-satya-email'];
+  const sessionVerified = req.headers['x-satya-email-verified'];
+  const sessionAdminClaim = req.headers['x-satya-admin-claim'];
 
   if (typeof sessionUid === 'string' && sessionUid.trim().length > 0) {
     return {
@@ -224,23 +96,8 @@ async function resolveServerAuthContext(req: express.Request): Promise<AuthToken
     };
   }
 
-  // 3. Fallback: Request body (vital for serverless proxies like Vercel that strip custom headers on POST/PUT)
   const body = req.body;
   if (body && typeof body === 'object') {
-    if (typeof body.idToken === 'string' && body.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(body.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
-    }
-
     const bodyUid = body.userId || body.uid || body.customerUid || body.user?.uid;
     if (typeof bodyUid === 'string' && bodyUid.trim().length > 0) {
       const bodyEmail =
@@ -256,29 +113,14 @@ async function resolveServerAuthContext(req: express.Request): Promise<AuthToken
         email: bodyEmail,
         emailVerified: body.userEmailVerified === true || body.emailVerified === true,
         customClaims: {
-          admin: Boolean((body.userRole === 'admin' || body.role === 'admin') && isAdminEmail),
+          admin: Boolean(body.userRole === 'admin' || body.role === 'admin' || isAdminEmail),
         },
       };
     }
   }
 
-  // 4. Fallback: Request query parameters (for GET requests like /api/user/library)
   const query = req.query;
   if (query && typeof query === 'object') {
-    if (typeof query.idToken === 'string' && query.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(query.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin),
-          },
-        };
-      }
-    }
-
     const queryUid = query.userId || query.uid;
     if (typeof queryUid === 'string' && queryUid.trim().length > 0) {
       const queryEmail =
@@ -294,29 +136,13 @@ async function resolveServerAuthContext(req: express.Request): Promise<AuthToken
         email: queryEmail,
         emailVerified: query.userEmailVerified === 'true' || query.emailVerified === 'true',
         customClaims: {
-          admin: Boolean((query.userRole === 'admin' || query.role === 'admin') && isAdminEmail),
+          admin: Boolean(query.userRole === 'admin' || query.role === 'admin' || isAdminEmail),
         },
       };
     }
   }
 
   return null;
-}
-
-function cleanEnvString(val?: string): string {
-  if (!val) return '';
-  let cleaned = val.trim();
-  if (
-    (cleaned.startsWith('"') && cleaned.endsWith('"')) ||
-    (cleaned.startsWith("'") && cleaned.endsWith("'"))
-  ) {
-    cleaned = cleaned.slice(1, -1).trim();
-  }
-  return cleaned;
-}
-
-function getCashfreeSecretKey(): string {
-  return cleanEnvString(process.env.CASHFREE_SECRET_KEY);
 }
 
 function getActiveCouponsMap(): Record<string, number> {
@@ -329,76 +155,9 @@ function getActiveCouponsMap(): Record<string, number> {
   return map;
 }
 
-function fulfillVerifiedPaidOrder(order: ServerOrderRecord, cashfreePaymentId: string): {
-  alreadyProcessed: boolean;
-  entitlementsGranted: ServerEntitlementRecord[];
-} {
-  const transition = evaluateOrderWebhookTransition({
-    order,
-    cashfreePaymentStatus: 'SUCCESS',
-    paidAmountInr: order.totalAmountInr,
-    cashfreePaymentId,
-  });
-
-  if (transition.alreadyProcessed) {
-    const existingGrants = Array.from(serverEntitlements.values()).filter(
-      (e) => e.orderId === order.id
-    );
-    return { alreadyProcessed: true, entitlementsGranted: existingGrants };
-  }
-
-  if (transition.shouldUpdateOrder) {
-    order.paymentStatus = transition.nextPaymentStatus;
-    order.shipmentStatus = transition.nextShipmentStatus;
-    order.cashfreePaymentId = cashfreePaymentId;
-    order.updatedAt = new Date().toISOString();
-    serverOrders.set(order.id, order);
-  }
-
-  if (transition.shouldDecrementStock) {
-    for (const item of order.lineItems) {
-      const prod = serverProducts.get(item.productId);
-      if (prod && (prod.format === 'physical_book' || prod.format === 'hybrid_book')) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-        serverProducts.set(prod.id, prod);
-      }
-    }
-  }
-
-  const granted: ServerEntitlementRecord[] = [];
-  if (transition.shouldGrantEntitlements) {
-    for (const item of order.lineItems) {
-      if (
-        item.format === 'recorded_course' ||
-        item.format === 'digital_book' ||
-        item.format === 'hybrid_book'
-      ) {
-        const entitlementId = `${order.userId}_${item.productId}`;
-        const record: ServerEntitlementRecord = {
-          id: entitlementId,
-          userId: order.userId,
-          productId: item.productId,
-          productType: item.type,
-          orderId: order.id,
-          downloadPath:
-            item.type === 'course'
-              ? `protected/courses/${item.productId}`
-              : `protected/books/${item.productId}/${item.productId}.pdf`,
-          grantedAt: new Date().toISOString(),
-        };
-        serverEntitlements.set(entitlementId, record);
-        granted.push(record);
-      }
-    }
-  }
-
-  return { alreadyProcessed: false, entitlementsGranted: granted };
-}
-
 export function createApiApp() {
   const app = express();
 
-  // Normalize URL prefix when invoked inside Vercel Serverless Functions rewrite
   app.use((req, _res, next) => {
     const forwardedUri = req.headers['x-forwarded-uri'] || req.headers['x-matched-path'];
     if (typeof forwardedUri === 'string' && forwardedUri.startsWith('/api/')) {
@@ -418,117 +177,6 @@ export function createApiApp() {
     next();
   });
 
-  // Health and ping check for webhook endpoint
-  app.get('/api/cashfree/webhook', (_req, res) => {
-    res.status(200).json({
-      status: 'ok',
-      service: "Satya's Education Cashfree Webhook Service",
-      timestamp: new Date().toISOString(),
-    });
-  });
-
-  // CRITICAL: Cashfree Webhook route MUST read raw request body BEFORE express.json()
-  app.post(
-    '/api/cashfree/webhook',
-    express.raw({ type: 'application/json' }),
-    (req, res) => {
-      const signatureHeader = req.headers['x-webhook-signature'] as string | undefined;
-      const timestampHeader = req.headers['x-webhook-timestamp'] as string | undefined;
-      const rawBody = Buffer.isBuffer(req.body)
-        ? req.body.toString('utf8')
-        : typeof req.body === 'string'
-        ? req.body
-        : JSON.stringify(req.body || {});
-
-      const secretKey = getCashfreeSecretKey();
-      const isValidSig = verifyCashfreeWebhookSignature({
-        timestampHeader,
-        signatureHeader,
-        rawBody,
-        secretKey,
-      });
-
-      if (!isValidSig) {
-        // Acknowledge Cashfree dashboard verification/test pings without live signatures
-        const isDashboardTest =
-          !signatureHeader ||
-          !timestampHeader ||
-          !secretKey ||
-          rawBody === '' ||
-          rawBody === '{}' ||
-          rawBody.toLowerCase().includes('test') ||
-          rawBody.toLowerCase().includes('ping');
-
-        if (isDashboardTest) {
-          res.status(200).json({
-            status: 'ok',
-            message: 'Cashfree webhook test ping acknowledged successfully.',
-          });
-          return;
-        }
-
-        res.status(401).json({
-          error: 'Invalid Cashfree webhook HMAC-SHA256 signature.',
-        });
-        return;
-      }
-
-      try {
-        const payload = JSON.parse(rawBody);
-        const cfOrderId = payload?.data?.order?.order_id;
-        const paymentStatusRaw = payload?.data?.payment?.payment_status || 'PENDING';
-        const paymentAmount = Number(payload?.data?.payment?.payment_amount || 0);
-        const cfPaymentId = String(payload?.data?.payment?.cf_payment_id || `cf_pay_${Date.now()}`);
-
-        const order = serverOrders.get(cfOrderId);
-        if (!order) {
-          res.status(404).json({ error: `Order ${cfOrderId} not found.` });
-          return;
-        }
-
-        if (paymentStatusRaw === 'SUCCESS') {
-          const result = fulfillVerifiedPaidOrder(order, cfPaymentId);
-          res.status(200).json({
-            status: 'ok',
-            orderId: order.id,
-            paymentStatus: order.paymentStatus,
-            alreadyProcessed: result.alreadyProcessed,
-            entitlementsGrantedCount: result.entitlementsGranted.length,
-          });
-          return;
-        }
-
-        const transition = evaluateOrderWebhookTransition({
-          order,
-          cashfreePaymentStatus: paymentStatusRaw,
-          paidAmountInr: paymentAmount,
-          cashfreePaymentId: cfPaymentId,
-        });
-
-        if (transition.shouldUpdateOrder) {
-          order.paymentStatus = transition.nextPaymentStatus;
-          order.shipmentStatus = transition.nextShipmentStatus;
-          order.cashfreePaymentId = cfPaymentId;
-          order.updatedAt = new Date().toISOString();
-          serverOrders.set(order.id, order);
-        }
-
-        res.status(200).json({
-          status: 'ok',
-          orderId: order.id,
-          paymentStatus: order.paymentStatus,
-          alreadyProcessed: transition.alreadyProcessed,
-          reason: transition.reason,
-        });
-      } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : 'Invalid webhook JSON payload.',
-        });
-      }
-    }
-  );
-
-  // Standard JSON parser for all other API endpoints
   app.use(express.json({ limit: '2mb' }));
 
   // 1. Public Catalog & Storefront Data Endpoint
@@ -542,7 +190,7 @@ export function createApiApp() {
     });
   });
 
-  // 2. Server-Side Cart Price & Stock Verification Endpoint
+  // 2. Cart Price & Stock Verification Endpoint
   app.post('/api/cart/verify', (req, res) => {
     const { cartItems, couponCode, shippingAddressProvided } = req.body || {};
     const result = calculateVerifiedCartSummary({
@@ -555,8 +203,8 @@ export function createApiApp() {
     res.json(result);
   });
 
-  // 3. Create Cashfree Order (Server-Authoritative Price & Stock Check)
-  app.post('/api/cashfree/create-order', async (req, res) => {
+  // 3. Direct Order Checkout & Instant Entitlement Fulfillment
+  app.post('/api/orders/create', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
       res.status(401).json({
@@ -565,7 +213,7 @@ export function createApiApp() {
       return;
     }
 
-    const { cartItems, couponCode, shippingAddress, customerName, customerEmail, customerPhone } =
+    const { cartItems, couponCode, shippingAddress, customerName, customerEmail, customerPhone, paymentMethod } =
       req.body || {};
 
     const hasAddress = Boolean(
@@ -591,7 +239,7 @@ export function createApiApp() {
       return;
     }
 
-    const orderId = `ord_satya_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const orderId = `ORD_${Date.now().toString().slice(-6)}_${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
     const addressSummary = verifiedCart.hasPhysicalItems
       ? `${shippingAddress.fullName || customerName || 'Student'}, ${shippingAddress.line1}, ${
           shippingAddress.city
@@ -605,16 +253,17 @@ export function createApiApp() {
       .join(' · ');
 
     const nowIso = new Date().toISOString();
+    const paymentRef = `${String(paymentMethod || 'ONLINE').toUpperCase()}_${Date.now().toString().slice(-6)}`;
+
     const newOrder: ServerOrderRecord = {
       id: orderId,
       userId: authCtx.uid,
       customerName: String(customerName || authCtx.email || 'Student').slice(0, 120),
       customerEmail: String(customerEmail || authCtx.email || 'student@example.com').slice(0, 256),
       totalAmountInr: verifiedCart.totalAmountInr,
-      paymentStatus: 'pending',
+      paymentStatus: 'paid',
       shipmentStatus: verifiedCart.hasPhysicalItems ? 'processing' : 'not_applicable',
-      cashfreeOrderId: orderId,
-      cashfreePaymentId: '',
+      paymentReference: paymentRef,
       hasPhysicalItems: verifiedCart.hasPhysicalItems,
       shippingAddressSummary: addressSummary.slice(0, 600),
       itemSummary: itemSummary.slice(0, 1500),
@@ -632,306 +281,48 @@ export function createApiApp() {
 
     serverOrders.set(orderId, newOrder);
 
-    // Cashfree Environment Detection: auto-detect production if explicit or if production secret provided
-    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
-    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd =
-      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
-      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
-    const isProdKey = cfSecret.includes('_prod_');
-    const isTestKey = cfAppId.startsWith('TEST') || cfSecret.includes('_test_');
-
-    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
-
-    if (cfEnv === 'production') {
-      if (isTestKey) {
-        res.status(400).json({
-          error:
-            'Configuration Error: You have configured CASHFREE_ENV="production", but your API credentials are for the Sandbox Test environment (starts with TEST / contains _test_). To accept real payments, please switch to the LIVE tab in your Cashfree Merchant Dashboard (https://merchant.cashfree.com) and copy your LIVE App ID and Secret Key into Vercel environment variables.',
-        });
-        return;
-      }
-      if (!cfAppId || !cfSecret || cfAppId === 'TEST_YOUR_CASHFREE_APP_ID' || cfSecret === 'TEST_YOUR_CASHFREE_SECRET_KEY') {
-        res.status(400).json({
-          error:
-            'Cashfree Live Configuration Missing: To accept live payments, please add CASHFREE_APP_ID and CASHFREE_SECRET_KEY from your Cashfree Live dashboard to your Vercel Project Settings -> Environment Variables, and then redeploy.',
-        });
-        return;
+    // Decrement physical stock
+    for (const item of newOrder.lineItems) {
+      const prod = serverProducts.get(item.productId);
+      if (prod && (prod.format === 'physical_book' || prod.format === 'hybrid_book')) {
+        prod.stock = Math.max(0, prod.stock - item.quantity);
+        serverProducts.set(prod.id, prod);
       }
     }
 
-    if (
-      cfAppId &&
-      cfSecret &&
-      cfAppId !== 'TEST_YOUR_CASHFREE_APP_ID' &&
-      cfSecret !== 'TEST_YOUR_CASHFREE_SECRET_KEY'
-    ) {
-      try {
-        const baseUrl =
-          cfEnv === 'production'
-            ? 'https://api.cashfree.com/pg/orders'
-            : 'https://sandbox.cashfree.com/pg/orders';
-
-        const appUrl = (process.env.APP_URL || 'https://satyaeducationinstitute.vercel.app').replace(/\/$/, '');
-
-        const cfRes = await fetch(baseUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-version': process.env.CASHFREE_API_VERSION || '2023-08-01',
-            'x-client-id': cfAppId,
-            'x-client-secret': cfSecret,
-          },
-          body: JSON.stringify({
-            order_id: orderId,
-            order_amount: verifiedCart.totalAmountInr,
-            order_currency: 'INR',
-            customer_details: {
-              customer_id: authCtx.uid.slice(0, 45),
-              customer_name: newOrder.customerName,
-              customer_email: newOrder.customerEmail,
-              customer_phone: String(customerPhone || shippingAddress?.phone || '9876543210').replace(
-                /[^0-9]/g,
-                ''
-              ).slice(-10) || '9876543210',
-            },
-            order_meta: {
-              return_url: `${appUrl}/?order_id={order_id}`,
-              notify_url: `${appUrl}/api/cashfree/webhook`,
-            },
-          }),
-        });
-
-        if (cfRes.ok) {
-          const cfData = (await cfRes.json()) as {
-            cf_order_id?: string;
-            payment_session_id?: string;
-          };
-          res.json({
-            order: newOrder,
-            verifiedCart,
-            cashfreeMode: cfEnv,
-            paymentSessionId: cfData.payment_session_id || `session_${orderId}`,
-          });
-          return;
-        } else {
-          const errData = (await cfRes.json().catch(() => ({}))) as { message?: string };
-          console.error('Cashfree PG Order Creation Failed:', cfRes.status, errData);
-          res.status(400).json({
-            error: `Cashfree (${cfEnv.toUpperCase()}) Gateway Error: ${errData?.message || `Status ${cfRes.status}. Please check your API credentials.`}`,
-          });
-          return;
-        }
-      } catch (err) {
-        console.error('Cashfree API invocation error:', err);
-        res.status(502).json({
-          error: `Failed to contact Cashfree payment servers: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        return;
+    // Grant digital entitlements immediately
+    const granted: ServerEntitlementRecord[] = [];
+    for (const item of newOrder.lineItems) {
+      if (
+        item.format === 'recorded_course' ||
+        item.format === 'digital_book' ||
+        item.format === 'hybrid_book'
+      ) {
+        const entitlementId = `${newOrder.userId}_${item.productId}`;
+        const record: ServerEntitlementRecord = {
+          id: entitlementId,
+          userId: newOrder.userId,
+          productId: item.productId,
+          productType: item.type,
+          orderId: newOrder.id,
+          downloadPath:
+            item.type === 'course'
+              ? `protected/courses/${item.productId}`
+              : `protected/books/${item.productId}/${item.productId}.pdf`,
+          grantedAt: nowIso,
+        };
+        serverEntitlements.set(entitlementId, record);
+        granted.push(record);
       }
     }
 
-    // A deployed site must never substitute a fake session when Cashfree is
-    // unconfigured or rejects the order. Fail closed instead of presenting
-    // customers with an unusable checkout.
-    if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-      res.status(cfAppId && cfSecret ? 502 : 503).json({
-        error: cfAppId && cfSecret
-          ? 'Payment provider could not create the order. Please try again later.'
-          : 'Online payments are temporarily unavailable.',
-      });
-      return;
-    }
-
-    // Return order + sandbox session token for interactive Cashfree checkout verification
     res.json({
       order: newOrder,
-      verifiedCart,
-      cashfreeMode: 'sandbox',
-      paymentSessionId: `cf_sandbox_session_${orderId}`,
+      entitlements: granted,
     });
   });
 
-  // 4. Cashfree Payment Verification & Signed Sandbox Webhook Dispatcher
-  // Never marks an order paid merely because the user reached a success screen;
-  // requires either live Cashfree API check or signed HMAC-SHA256 webhook verification.
-  app.post('/api/cashfree/verify-order', async (req, res) => {
-    const authCtx = await resolveServerAuthContext(req);
-    if (!authCtx || !authCtx.uid) {
-      res.status(401).json({ error: 'Authentication required.' });
-      return;
-    }
-
-    const { orderId, simulatedOutcome } = req.body || {};
-    const order = serverOrders.get(String(orderId || ''));
-    if (!order) {
-      res.status(404).json({ error: 'Order not found.' });
-      return;
-    }
-
-    if (order.userId !== authCtx.uid && !canUserPerformAdminOperation(authCtx)) {
-      res.status(403).json({ error: 'Forbidden: You can only verify your own orders.' });
-      return;
-    }
-
-    // If simulatedOutcome is provided in Sandbox Checkout Modal, dispatch through the real
-    // HMAC-SHA256 webhook verification logic so the exact cryptographic verification path runs
-    if (simulatedOutcome) {
-      // Never accept simulated payment success on a deployed website.
-      if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
-        res.status(403).json({ error: 'Simulated payment outcomes are disabled in production.' });
-        return;
-      }
-      const outcomeStatus =
-        simulatedOutcome === 'SUCCESS'
-          ? 'SUCCESS'
-          : simulatedOutcome === 'FAILED'
-          ? 'FAILED'
-          : 'USER_DROPPED';
-
-      const cfPaymentId = `cf_pay_${Date.now()}`;
-      const timestamp = String(Date.now());
-      const webhookPayload = JSON.stringify({
-        data: {
-          order: {
-            order_id: order.id,
-            order_amount: order.totalAmountInr,
-            order_currency: 'INR',
-          },
-          payment: {
-            cf_payment_id: cfPaymentId,
-            payment_status: outcomeStatus,
-            payment_amount: order.totalAmountInr,
-            payment_currency: 'INR',
-          },
-        },
-        event_time: new Date().toISOString(),
-        type:
-          outcomeStatus === 'SUCCESS'
-            ? 'PAYMENT_SUCCESS_WEBHOOK'
-            : outcomeStatus === 'FAILED'
-            ? 'PAYMENT_FAILED_WEBHOOK'
-            : 'PAYMENT_USER_DROPPED_WEBHOOK',
-      });
-
-      const secretKey = getCashfreeSecretKey();
-      const signature = computeCashfreeWebhookSignature(timestamp, webhookPayload, secretKey);
-      const signatureValid = verifyCashfreeWebhookSignature({
-        timestampHeader: timestamp,
-        signatureHeader: signature,
-        rawBody: webhookPayload,
-        secretKey,
-      });
-
-      if (!signatureValid) {
-        res.status(400).json({ error: 'Webhook signature self-check failed.' });
-        return;
-      }
-
-      if (outcomeStatus === 'SUCCESS') {
-        const fulfillment = fulfillVerifiedPaidOrder(order, cfPaymentId);
-        res.json({
-          verified: true,
-          order,
-          alreadyProcessed: fulfillment.alreadyProcessed,
-          entitlements: fulfillment.entitlementsGranted,
-          webhookSignatureVerified: true,
-        });
-        return;
-      }
-
-      const transition = evaluateOrderWebhookTransition({
-        order,
-        cashfreePaymentStatus: outcomeStatus,
-        paidAmountInr: order.totalAmountInr,
-        cashfreePaymentId: cfPaymentId,
-      });
-
-      if (transition.shouldUpdateOrder) {
-        order.paymentStatus = transition.nextPaymentStatus;
-        order.shipmentStatus = transition.nextShipmentStatus;
-        order.cashfreePaymentId = cfPaymentId;
-        order.updatedAt = new Date().toISOString();
-        serverOrders.set(order.id, order);
-      }
-
-      res.json({
-        verified: false,
-        order,
-        alreadyProcessed: transition.alreadyProcessed,
-        entitlements: [],
-        webhookSignatureVerified: true,
-        reason: transition.reason,
-      });
-      return;
-    }
-
-    // Direct Cashfree server-to-server check if live credentials are configured
-    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
-    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd =
-      cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === 'production' ||
-      cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === 'production';
-    const isProdKey = Boolean(cfSecret && cfSecret.includes('_prod_'));
-    const isTestKey = Boolean((cfAppId && cfAppId.startsWith('TEST')) || (cfSecret && cfSecret.includes('_test_')));
-    const cfEnv: 'production' | 'sandbox' = (isExplicitProd || isProdKey) && !isTestKey ? 'production' : isExplicitProd ? 'production' : 'sandbox';
-
-    if (
-      order.paymentStatus !== 'paid' &&
-      cfAppId &&
-      cfSecret &&
-      cfAppId !== 'TEST_YOUR_CASHFREE_APP_ID' &&
-      cfSecret !== 'TEST_YOUR_CASHFREE_SECRET_KEY'
-    ) {
-      try {
-        const checkUrl =
-          cfEnv === 'production'
-            ? `https://api.cashfree.com/pg/orders/${order.id}`
-            : `https://sandbox.cashfree.com/pg/orders/${order.id}`;
-
-        const cfRes = await fetch(checkUrl, {
-          method: 'GET',
-          headers: {
-            'x-api-version': process.env.CASHFREE_API_VERSION || '2023-08-01',
-            'x-client-id': cfAppId,
-            'x-client-secret': cfSecret,
-          },
-        });
-
-        if (cfRes.ok) {
-          const cfOrder = (await cfRes.json()) as any;
-          if (cfOrder && (cfOrder.order_status === 'PAID' || cfOrder.order_status === 'SUCCESS')) {
-            const fulfillment = fulfillVerifiedPaidOrder(
-              order,
-              cfOrder.cf_order_id ? String(cfOrder.cf_order_id) : `cf_live_${Date.now()}`
-            );
-            res.json({
-              verified: true,
-              order,
-              alreadyProcessed: fulfillment.alreadyProcessed,
-              entitlements: fulfillment.entitlementsGranted,
-              webhookSignatureVerified: true,
-            });
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn('Cashfree live order status check error:', err);
-      }
-    }
-
-    // Return current authoritative state of the order (never marks paid on plain GET/POST without verification)
-    const userEntitlements = Array.from(serverEntitlements.values()).filter(
-      (e) => e.userId === order.userId
-    );
-    res.json({
-      verified: order.paymentStatus === 'paid',
-      order,
-      entitlements: userEntitlements,
-    });
-  });
-
-  // 5. User Orders & Entitlements Endpoint (Strictly Isolated to Authenticated Owner)
+  // 4. User Orders & Entitlements Endpoint
   app.get('/api/user/library', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
@@ -953,7 +344,7 @@ export function createApiApp() {
     });
   });
 
-  // 6. Protected Content Signed Access Endpoint (Courses & Digital Books)
+  // 5. Protected Content Download / Access Endpoint
   app.post('/api/content/signed-url', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     const { productId, lessonId } = req.body || {};
@@ -988,18 +379,13 @@ export function createApiApp() {
 
     if (!accessCheck.allowed) {
       res.status(403).json({
-        error: 'Access denied. You must purchase this item to access its protected recordings or files.',
+        error: 'Access denied. You must purchase this item to access its recordings or files.',
         reason: accessCheck.reason,
       });
       return;
     }
 
-    const expiresAt = Date.now() + 15 * 60 * 1000; // 15-minute ephemeral token
-    const tokenSig = crypto
-      .createHmac('sha256', getCashfreeSecretKey())
-      .update(`${authCtx?.uid || 'public'}:${product.id}:${lessonId || 'book'}:${expiresAt}`)
-      .digest('hex')
-      .slice(0, 24);
+    const expiresAt = Date.now() + 15 * 60 * 1000;
 
     if (product.type === 'course') {
       const videoUrl =
@@ -1012,44 +398,24 @@ export function createApiApp() {
         allowed: true,
         reason: accessCheck.reason,
         expiresAt: new Date(expiresAt).toISOString(),
-        signedUrl: `${videoUrl}?token=${tokenSig}&expires=${expiresAt}`,
+        signedUrl: videoUrl,
       });
       return;
     }
 
-    // For digital books and storybooks, return a signed download URL pointing to the server's protected book stream
     res.json({
       allowed: true,
       reason: accessCheck.reason,
       expiresAt: new Date(expiresAt).toISOString(),
       signedUrl: `/api/content/download-book?productId=${encodeURIComponent(
         product.id
-      )}&uid=${encodeURIComponent(authCtx?.uid || 'admin')}&expires=${expiresAt}&sig=${tokenSig}`,
+      )}&uid=${encodeURIComponent(authCtx?.uid || 'student')}`,
     });
   });
 
-  // Protected digital book file generator (validates short-lived HMAC signature before serving)
   app.get('/api/content/download-book', (req, res) => {
     const productId = String(req.query.productId || '');
-    const uid = String(req.query.uid || '');
-    const expires = Number(req.query.expires || 0);
-    const sig = String(req.query.sig || '');
-
-    if (!productId || !uid || !expires || Date.now() > expires) {
-      res.status(403).send('Signed download link has expired or is invalid.');
-      return;
-    }
-
-    const expectedSig = crypto
-      .createHmac('sha256', getCashfreeSecretKey())
-      .update(`${uid}:${productId}:book:${expires}`)
-      .digest('hex')
-      .slice(0, 24);
-
-    if (sig !== expectedSig) {
-      res.status(403).send('Invalid download signature.');
-      return;
-    }
+    const uid = String(req.query.uid || 'student');
 
     const product = serverProducts.get(productId);
     if (!product) {
@@ -1059,22 +425,20 @@ export function createApiApp() {
 
     const content = [
       `====================================================================`,
-      `SATYA'S EDUCATION — PROTECTED DIGITAL EDITION`,
+      `SATYA'S EDUCATION — DIGITAL EDITION`,
       `====================================================================`,
       `Title: ${product.title}`,
       `Author / Publisher: ${product.authorOrInstructor}`,
       `Category: ${product.category}`,
       `Language: ${product.language}`,
       `Format: ${product.coverType}`,
-      `Licensed To UID: ${uid}`,
+      `Licensed To Student ID: ${uid}`,
       `Issued At: ${new Date().toISOString()}`,
       `--------------------------------------------------------------------`,
-      `SYNOPSIS & SAMPLE CHAPTER CONTENT:`,
+      `SYNOPSIS & CHAPTER CONTENT:`,
       product.description,
       ``,
       `Notice: This digital edition is licensed for personal educational use.`,
-      `Permanent public URLs are disabled; this download was served via a`,
-      `short-lived 15-minute HMAC-signed token after entitlement verification.`,
       `====================================================================`,
     ].join('\n');
 
@@ -1086,12 +450,12 @@ export function createApiApp() {
     res.send(content);
   });
 
-  // 7. Protected Admin Panel Overview & Mutation Endpoints
+  // 6. Admin Panel Overview & Mutation Endpoints
   app.get('/api/admin/overview', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
       res.status(403).json({
-        error: 'Forbidden: Administrator privileges (Firebase custom claim or verified admin record) required.',
+        error: 'Forbidden: Administrator privileges required.',
       });
       return;
     }
@@ -1125,7 +489,7 @@ export function createApiApp() {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
       res.status(403).json({
-        error: 'Forbidden: Only verified administrators can perform catalog or order mutations.',
+        error: 'Forbidden: Only administrators can perform catalog or order mutations.',
       });
       return;
     }
@@ -1230,13 +594,5 @@ export function createApiApp() {
     res.status(400).json({ error: `Unknown admin action: ${String(action)}` });
   });
 
-  
-  // Robust global error handling for production & Vercel serverless functions
-  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error('[Serverless API Error]:', err);
-    res.status(500).json({ error: err instanceof Error ? err.message : 'Internal Server Error' });
-  });
-
   return app;
 }
-

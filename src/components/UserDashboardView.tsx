@@ -7,7 +7,6 @@ import {
   MapPin,
   Heart,
   User,
-  ShieldAlert,
   LogOut,
   MailCheck,
 } from 'lucide-react';
@@ -24,8 +23,7 @@ export interface UserOrderSummary {
   totalAmountInr: number;
   paymentStatus: 'pending' | 'paid' | 'failed' | 'cancelled' | 'refunded';
   shipmentStatus: 'not_applicable' | 'processing' | 'packed' | 'shipped' | 'delivered';
-  cashfreeOrderId: string;
-  cashfreePaymentId: string;
+  paymentReference?: string;
   hasPhysicalItems: boolean;
   shippingAddressSummary: string;
   itemSummary: string;
@@ -122,7 +120,6 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   const [profileSavedToast, setProfileSavedToast] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
 
-  // New Address state
   const [addrName, setAddrName] = useState(user.name);
   const [addrPhone, setAddrPhone] = useState(user.phone || '+91 9876543210');
   const [addrLine1, setAddrLine1] = useState('');
@@ -130,8 +127,8 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   const [addrState, setAddrState] = useState('');
   const [addrPin, setAddrPin] = useState('');
 
-  const handleSecureBookDownload = async (book: CatalogProduct) => {
-    setDownloadStatus(`Verifying entitlement for "${book.title}"...`);
+  const handleBookDownload = async (book: CatalogProduct) => {
+    setDownloadStatus(`Preparing download for "${book.title}"...`);
     try {
       const authHeaders = await getClientAuthHeaders(user);
       const authPayload = await getClientAuthPayload(user);
@@ -145,14 +142,10 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
       });
       const data = await res.json();
       if (!res.ok || !data.signedUrl) {
-        setDownloadStatus(data.error || 'Could not generate signed download link.');
+        setDownloadStatus(data.error || 'Could not generate download link.');
         return;
       }
-      setDownloadStatus(
-        `Signed 15-minute URL generated (expires ${new Date(
-          data.expiresAt
-        ).toLocaleTimeString()}). Starting download...`
-      );
+      setDownloadStatus(`Download started for "${book.title}".`);
       const link = document.createElement('a');
       link.href = data.signedUrl;
       link.download = `${book.slug}-satya-education.txt`;
@@ -176,13 +169,13 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
           />
           <div>
             <p className="text-xs font-mono-tabular text-[#D4AF37]">
-              STUDENT LEARNING DASHBOARD · ISOLATED USER DATA
+              STUDENT LEARNING DASHBOARD
             </p>
             <h1 className="font-display text-2xl font-bold mt-1">Welcome, {user.name}</h1>
             <p className="text-xs text-slate-300 mt-1">
               <span>{user.email}</span>
               <span aria-hidden="true"> · </span>
-              <span>{user.emailVerified ? 'Email Verified' : 'Verification Pending'}</span>
+              <span className="uppercase">{user.role}</span>
             </p>
           </div>
         </div>
@@ -205,7 +198,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
             { id: 'orders', label: `Orders (${orders.length})` },
             { id: 'addresses', label: `Addresses (${addresses.length})` },
             { id: 'wishlist', label: `Wishlist (${wishlistIds.length})` },
-            { id: 'profile', label: 'Profile & Security' },
+            { id: 'profile', label: 'Profile' },
           ] as const
         ).map((tab) => (
           <button
@@ -223,7 +216,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
         ))}
       </div>
 
-      {/* TAB 1: My Courses & Video Player with Saved Progress */}
+      {/* TAB 1: My Courses & Video Player */}
       {activeTab === 'courses' && (
         <div className="space-y-6">
           {myCourses.length === 0 ? (
@@ -232,13 +225,12 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                 No Purchased Courses Yet
               </h2>
               <p className="text-sm text-slate-600 mt-1">
-                Once you complete a verified Cashfree purchase for a course, all HD module
-                recordings unlock here automatically.
+                Once you complete an order for a course, all HD module recordings unlock here
+                automatically.
               </p>
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* Course Selector & Lesson Playlist */}
               <div className="lg:col-span-4 bg-white border border-slate-200 rounded-xl p-5 space-y-4">
                 <div>
                   <label
@@ -299,7 +291,6 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                 </div>
               </div>
 
-              {/* Active Video Player & Progress Controls */}
               <div className="lg:col-span-8 bg-white border border-slate-200 rounded-xl overflow-hidden">
                 {currentLesson && activeCourse && (
                   <>
@@ -362,7 +353,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
         </div>
       )}
 
-      {/* TAB 2: My Digital Books with Short-Lived Signed Downloads */}
+      {/* TAB 2: My Digital Books */}
       {activeTab === 'books' && (
         <div className="space-y-6">
           {downloadStatus && (
@@ -380,8 +371,8 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                 No Digital Books Unlocked Yet
               </h2>
               <p className="text-sm text-slate-600 mt-1">
-                Purchased digital textbooks and illustrated storybooks appear here with secure
-                signed download links.
+                Purchased digital textbooks and illustrated storybooks appear here with direct
+                download links.
               </p>
             </div>
           ) : (
@@ -404,39 +395,20 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={() => handleSecureBookDownload(book)}
+                    onClick={() => handleBookDownload(book)}
                     className="py-2.5 px-4 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 inline-flex items-center justify-center gap-2"
                   >
                     <Download className="w-4 h-4 text-[#D4AF37]" />
-                    <span>Download Protected Edition (15-Min Signed URL)</span>
+                    <span>Download Digital Edition</span>
                   </button>
                 </div>
               ))}
             </div>
           )}
-
-          {/* Mandatory Security Disclosure on Content Protection Limitations */}
-          <div className="bg-white border border-slate-200 rounded-xl p-5 flex items-start gap-3">
-            <ShieldAlert className="w-5 h-5 text-[#B48A1E] shrink-0 mt-0.5" />
-            <div className="text-xs text-slate-600 space-y-1 leading-relaxed">
-              <p className="font-bold text-[#0A192F]">
-                Content Security & Practical DRM Limitations
-              </p>
-              <p>
-                Satya’s Education protects paid recordings and digital books by verifying purchase
-                entitlements in Firestore and Firebase Storage rules and issuing short-lived,
-                HMAC-signed URLs rather than permanent public links. However, once video frames or
-                PDF bytes are rendered on a user’s device, no web application can completely prevent
-                external camera capture, OS-level screen recording, or local file redistribution
-                without hardware-level DRM (such as Widevine L1/FairPlay). Accordingly, downloads
-                include buyer UID attribution in the document header.
-              </p>
-            </div>
-          </div>
         </div>
       )}
 
-      {/* TAB 3: Order History & Shipment Status */}
+      {/* TAB 3: Order History */}
       {activeTab === 'orders' && (
         <div className="space-y-4">
           {orders.length === 0 ? (
@@ -444,7 +416,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
               <Package className="w-8 h-8 text-slate-400 mx-auto mb-2" />
               <h2 className="font-display text-lg font-bold text-[#0A192F]">No Orders Found</h2>
               <p className="text-sm text-slate-600 mt-1">
-                Your completed and pending Cashfree orders will be listed here.
+                Your completed orders will be listed here.
               </p>
             </div>
           ) : (
@@ -473,7 +445,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                           : 'text-amber-700'
                       }
                     >
-                      Payment: {ord.paymentStatus.toUpperCase()}
+                      Status: {ord.paymentStatus.toUpperCase()}
                     </span>
                     {ord.hasPhysicalItems && (
                       <>
@@ -493,9 +465,9 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                 <p className="text-xs text-slate-700 font-medium">{ord.itemSummary}</p>
                 <div className="text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
                   <span>Delivery: {ord.shippingAddressSummary}</span>
-                  {ord.cashfreePaymentId && (
+                  {ord.paymentReference && (
                     <span className="font-mono-tabular">
-                      Cashfree Ref: {ord.cashfreePaymentId}
+                      Ref: {ord.paymentReference}
                     </span>
                   )}
                 </div>
@@ -712,7 +684,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
           <div className="flex items-center gap-3">
             <User className="w-5 h-5 text-[#B48A1E]" />
             <h2 className="font-display text-lg font-bold text-[#0A192F]">
-              Profile & Account Security
+              Profile Settings
             </h2>
           </div>
 
@@ -721,8 +693,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
               role="status"
               className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800"
             >
-              Profile updated successfully. Role and UID fields remain locked by Firestore security
-              rules.
+              Profile updated successfully.
             </div>
           )}
 
@@ -764,20 +735,18 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
 
             <div className="grid grid-cols-2 gap-3 pt-2 text-xs text-slate-600">
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                <span className="text-slate-400 block">Email (Immutable)</span>
+                <span className="text-slate-400 block">Email</span>
                 <span className="font-semibold text-slate-900">{user.email}</span>
               </div>
               <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-                <span className="text-slate-400 block">Account Role (Server-Guarded)</span>
+                <span className="text-slate-400 block">Account Role</span>
                 <span className="font-semibold text-slate-900 uppercase">{user.role}</span>
               </div>
             </div>
 
             <div className="flex items-center gap-2 text-xs text-emerald-700">
               <MailCheck className="w-4 h-4" />
-              <span>
-                Email Verification Status: {user.emailVerified ? 'Verified' : 'Unverified'}
-              </span>
+              <span>Account Status: Active</span>
             </div>
 
             <button

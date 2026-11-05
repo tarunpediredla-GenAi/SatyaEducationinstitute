@@ -73,9 +73,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
         <span>Back to Catalog</span>
       </button>
 
-      {/* Contiguous 2-column split: Visual Gallery & Syllabus Left, Purchase Module Right */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* Left Column (7 cols): Cover / Preview Player + Detailed Curriculum / Synopsis */}
         <div className="lg:col-span-7 space-y-8">
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             {isCourse && activePreviewLesson ? (
@@ -120,7 +118,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
             )}
           </div>
 
-          {/* Course Introduction & Syllabus OR Book Synopsis */}
           <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-6">
             <div>
               <p className="text-xs text-slate-500 mb-2">
@@ -147,7 +144,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
               </div>
             )}
 
-            {/* Course Lesson List */}
             {isCourse && (
               <div className="pt-4 border-t border-slate-200">
                 <div className="flex items-center justify-between mb-4">
@@ -205,7 +201,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                               setActivePreviewLesson(lesson);
                             } else {
                               setLockedLessonNotice(
-                                `Lesson "${lesson.title}" is a protected recording. Add this course to your cart and complete verified Cashfree checkout to unlock all modules.`
+                                `Lesson "${lesson.title}" is a protected recording. Add this course to your cart and complete checkout to unlock all modules.`
                               );
                             }
                           }}
@@ -234,7 +230,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
               </div>
             )}
 
-            {/* Book / Storybook Specifications */}
             {!isCourse && (
               <div className="pt-4 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                 <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
@@ -249,7 +244,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                   <p className="text-xs text-slate-600 leading-relaxed">
                     {requiresPhysicalDelivery
                       ? `Physical book shipped across India. Requires a valid delivery address at checkout. Current warehouse stock: ${product.stock} copies.`
-                      : 'Instant digital download (PDF) unlocked in your My Books dashboard immediately after verified payment.'}
+                      : 'Instant digital download (PDF) unlocked in your My Books dashboard immediately after order confirmation.'}
                   </p>
                 </div>
 
@@ -268,7 +263,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
           </div>
         </div>
 
-        {/* Right Column (5 cols): Sticky Contiguous Purchase Module */}
         <div className="lg:col-span-5 lg:sticky lg:top-24">
           <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-6">
             <div>
@@ -278,8 +272,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                 <span>{product.level}</span>
                 <span aria-hidden="true"> · </span>
                 <span>{product.duration}</span>
-                <span aria-hidden="true"> · </span>
-                <span>Sample Edition</span>
               </div>
               <h1 className="font-display text-2xl font-bold text-[#0A192F] leading-snug">
                 {formatCleanTitle(product.title)}
@@ -287,10 +279,9 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
               <p className="text-sm text-slate-600 mt-2">{product.shortDescription}</p>
             </div>
 
-            {/* Pricing Row */}
             <div className="pt-4 border-t border-slate-200 flex items-baseline justify-between">
               <div>
-                <span className="text-xs text-slate-500 block">Verified Store Price (INR)</span>
+                <span className="text-xs text-slate-500 block">Store Price (INR)</span>
                 <div className="flex items-baseline gap-2.5 mt-1">
                   <span className="font-mono-tabular text-3xl font-bold text-[#0A192F]">
                     ₹{product.priceInr.toLocaleString('en-IN')}
@@ -317,7 +308,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
               </div>
             </div>
 
-            {/* Key Specifications Table */}
             <dl className="grid grid-cols-2 gap-3 text-xs bg-slate-50 p-4 rounded-lg border border-slate-200">
               <div>
                 <dt className="text-slate-500">
@@ -343,7 +333,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
               </div>
             </dl>
 
-            {/* Primary CTA Buttons */}
             <div className="space-y-3">
               {isEntitled ? (
                 <button
@@ -402,12 +391,6 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                 />
                 <span>{isWishlisted ? 'Saved in Your Wishlist' : 'Save to Wishlist'}</span>
               </button>
-            </div>
-
-            <div className="text-[11px] text-slate-500 leading-relaxed pt-2 border-t border-slate-200">
-              Sample catalog notice: Prices and stock are verified server-side from Firestore
-              before Cashfree INR order creation. Only verified payments unlock full recordings or
-              digital book files.
             </div>
           </div>
         </div>

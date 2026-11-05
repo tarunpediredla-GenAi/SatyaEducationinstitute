@@ -32,11 +32,7 @@ import {
   Zap,
   Phone,
 } from 'lucide-react';
-import { onAuthStateChanged } from 'firebase/auth';
-import { auth, db, signOut } from './firebase';
-import { doc, getDoc } from 'firebase/firestore';
 import {
-  BOOTSTRAPPED_ADMIN_EMAIL,
   BUSINESS_COMPLIANCE_INFO,
   type CatalogProduct,
   type CourseLesson,
@@ -137,13 +133,13 @@ export default function App() {
     }, 3500);
   };
 
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-    } catch (err) {
-      console.warn('Sign out:', err);
-    }
+  const handleSignOut = () => {
     setUser(null);
+    try {
+      localStorage.removeItem('satya_user_session');
+    } catch {
+      // ignore
+    }
     showToast('Signed out successfully.');
     if (activeView === 'dashboard' || activeView === 'admin') {
       setActiveView('home');
@@ -207,36 +203,17 @@ export default function App() {
 
   useEffect(() => {
     fetchCatalogFromServer();
-    const unsub = onAuthStateChanged(auth, async (fbUser) => {
-      if (fbUser) {
-        let role: 'student' | 'admin' = 'student';
-        try {
-          const tokenResult = await fbUser.getIdTokenResult();
-          if (tokenResult?.claims?.admin === true) {
-            role = 'admin';
-          } else {
-            const adminDoc = await getDoc(doc(db, 'admins', fbUser.uid));
-            if (adminDoc.exists()) {
-              role = 'admin';
-            }
-          }
-        } catch {
-          role = 'student';
+    try {
+      const saved = localStorage.getItem('satya_user_session');
+      if (saved) {
+        const parsed = JSON.parse(saved) as ActiveUserSession;
+        if (parsed && parsed.uid && parsed.email) {
+          setUser(parsed);
         }
-        const session: ActiveUserSession = {
-          uid: fbUser.uid,
-          name: fbUser.displayName || fbUser.email?.split('@')[0] || 'Student',
-          email: fbUser.email || 'student@example.com',
-          phone: fbUser.phoneNumber || '',
-          emailVerified: fbUser.emailVerified,
-          role,
-        };
-        setUser(session);
-      } else {
-        setUser(null);
       }
-    });
-    return () => unsub();
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
@@ -1024,9 +1001,9 @@ export default function App() {
                       <Lock className="w-4 h-4 text-[#D4AF37]" />
                     </div>
                     <div>
-                      <p className="font-semibold text-white">Verified Cashfree INR Checkout</p>
+                      <p className="font-semibold text-white">Direct INR Checkout</p>
                       <p className="text-slate-300 mt-1 leading-relaxed">
-                        Server-side price calculation and HMAC-SHA256 webhook verification.
+                        Transparent pricing in Indian Rupees with instant course & e-book access.
                       </p>
                     </div>
                   </div>
@@ -1158,10 +1135,10 @@ export default function App() {
                       <ShieldCheck className="w-5 h-5 text-[#D4AF37]" />
                     </div>
                     <h3 className="font-display font-bold text-base text-[#0A192F]">
-                      Transparent Cashfree Checkout
+                      Transparent INR Pricing
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      All prices transparently in INR (₹). Secure checkout powered by Cashfree Payments with 7-day refund guarantee.
+                      All prices transparently in INR (₹) with instant course access and a 7-day refund guarantee.
                     </p>
                   </div>
                 </div>
@@ -1199,10 +1176,10 @@ export default function App() {
                       02
                     </div>
                     <h3 className="font-display font-bold text-base text-[#0A192F]">
-                      Secure Checkout via Cashfree
+                      Direct Online Checkout
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Add items to your cart, apply coupons like <code className="font-mono-tabular font-bold text-[#0A192F]">SATYA20</code>, and pay securely using UPI, Cards, or Net Banking in Indian Rupees.
+                      Add items to your cart, apply coupons like <code className="font-mono-tabular font-bold text-[#0A192F]">SATYA20</code>, and complete your order in Indian Rupees.
                     </p>
                   </div>
 
@@ -1246,7 +1223,7 @@ export default function App() {
                     },
                     {
                       q: 'What payment methods are supported on Satya’s Education?',
-                      a: 'We process all payments through Cashfree Payments India Private Limited (PCI-DSS Level 1 compliant). Supported payment options include UPI (Google Pay, PhonePe, Paytm, BHIM), Indian Debit & Credit Cards (Visa, MasterCard, RuPay), and Net Banking across all major Indian banks.',
+                      a: 'Supported payment options include UPI (Google Pay, PhonePe, Paytm, BHIM), Indian Debit & Credit Cards (Visa, MasterCard, RuPay), and Net Banking across all major Indian banks.',
                     },
                     {
                       q: 'What is your Return and Refund Policy?',
@@ -1254,7 +1231,7 @@ export default function App() {
                     },
                     {
                       q: 'Can I cancel an order after placing it?',
-                      a: 'Physical book orders can be cancelled within 24 hours of placement or prior to dispatch from our warehouse at zero cancellation charge. Full refunds are processed directly back to your original payment method via Cashfree within 5 to 7 business days.',
+                      a: 'Physical book orders can be cancelled within 24 hours of placement or prior to dispatch from our warehouse at zero cancellation charge. Full refunds are processed directly back to your original payment method within 5 to 7 business days.',
                     },
                   ].map((faq, idx) => {
                     const isOpen = openFaqIndex === idx;
@@ -1622,14 +1599,8 @@ export default function App() {
               }
               onRemoveWishlist={handleToggleWishlist}
               onAddToCart={handleAddToCart}
-              onLogout={async () => {
-                try {
-                  await signOut(auth);
-                } catch {
-                  // Ignore signout error in demo session
-                }
-                setUser(null);
-                setActiveView('home');
+              onLogout={() => {
+                handleSignOut();
               }}
             />
           ) : (
@@ -1664,15 +1635,14 @@ export default function App() {
           />
         )}
 
-        {/* VIEW 7: Static Policy & Deployment Guide Pages */}
+        {/* VIEW 7: Static Policy Pages */}
         {(activeView === 'about' ||
           activeView === 'contact' ||
           activeView === 'privacy' ||
           activeView === 'terms' ||
           activeView === 'refund' ||
           activeView === 'cancellation' ||
-          activeView === 'shipping' ||
-          activeView === 'deployment') && <StaticAndGuideViews page={activeView} />}
+          activeView === 'shipping') && <StaticAndGuideViews page={activeView} />}
       </main>
 
       {/* Storefront Footer with Mandatory Compliance & Developer Attribution */}
@@ -1691,7 +1661,7 @@ export default function App() {
             </div>
             <p className="text-slate-400 leading-relaxed">
               Operated by <strong>{BUSINESS_COMPLIANCE_INFO.legalName}</strong>. Structured software engineering
-              courses, authoritative textbooks, and children’s STEM storybooks with secure Cashfree INR payments.
+              courses, authoritative textbooks, and children’s STEM storybooks.
             </p>
             <div className="pt-2 text-[11px] text-slate-400 space-y-1">
               <p>
@@ -1819,7 +1789,7 @@ export default function App() {
           </div>
 
           <div className="space-y-2">
-            <h3 className="font-semibold text-[#D4AF37]">Administration & Security</h3>
+            <h3 className="font-semibold text-[#D4AF37]">Administration</h3>
             <ul className="space-y-1.5">
               <li>
                 <button
@@ -1827,20 +1797,8 @@ export default function App() {
                   onClick={() => setActiveView('admin')}
                   className="hover:text-white"
                 >
-                  Protected Admin Console
+                  Admin Console
                 </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  onClick={() => setActiveView('deployment')}
-                  className="hover:text-white"
-                >
-                  Deployment & Cloud Guide
-                </button>
-              </li>
-              <li className="pt-2 text-[11px] text-slate-400">
-                Payment transactions secured by Cashfree Payments (PCI-DSS Level 1 Compliant)
               </li>
             </ul>
           </div>
@@ -1852,7 +1810,7 @@ export default function App() {
           </p>
           <p>© {new Date().getFullYear()} {BUSINESS_COMPLIANCE_INFO.tradeName}. All rights reserved.</p>
           <p className="text-[11px] text-slate-400">
-            All prices listed in Indian Rupees (INR - ₹). Payments processed securely via Cashfree Payments India Private Limited.
+            All prices listed in Indian Rupees (INR - ₹).
           </p>
           <p className="font-medium text-[#D4AF37] tracking-wide pt-1">
             WEbsite maker : Pediredla Tarunraj
@@ -1866,6 +1824,11 @@ export default function App() {
         onClose={() => setAuthModalOpen(false)}
         onSessionAuthenticated={(session) => {
           setUser(session);
+          try {
+            localStorage.setItem('satya_user_session', JSON.stringify(session));
+          } catch {
+            // ignore
+          }
           showToast(`Signed in as ${session.name} (${session.role})`);
         }}
       />
