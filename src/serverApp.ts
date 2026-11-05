@@ -1,6 +1,8 @@
 import express from 'express';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
+import { applicationDefault, cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   calculateVerifiedCartSummary,
@@ -76,73 +78,36 @@ export interface ServerEntitlementRecord {
 const serverOrders = new Map<string, ServerOrderRecord>();
 const serverEntitlements = new Map<string, ServerEntitlementRecord>();
 
+/**
+ * Only verified Firebase ID tokens identify a customer.
+ * No request headers, JSON bodies or query strings can grant an identity/role.
+ */
 async function resolveServerAuthContext(req: express.Request): Promise<AuthTokenContext | null> {
-  const sessionUid =
-    req.headers['x-satya-uid'] ||
-    req.headers['x-user-id'] ||
-    req.headers['x-user-uid'];
-  const sessionEmail = req.headers['x-satya-email'];
-  const sessionVerified = req.headers['x-satya-email-verified'];
-  const sessionAdminClaim = req.headers['x-satya-admin-claim'];
+  const match = /^Bearer\\s+(.+)$/i.exec(req.headers.authorization || '');
+  if (!match) return null;
 
-  if (typeof sessionUid === 'string' && sessionUid.trim().length > 0) {
+  try {
+    if (getApps().length === 0) {
+      const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+      initializeApp({
+        credential: serviceAccount
+          ? cert(JSON.parse(serviceAccount))
+          : applicationDefault(),
+        projectId: process.env.FIREBASE_PROJECT_ID || undefined,
+      });
+    }
+    const verified = await getAdminAuth().verifyIdToken(match[1]);
     return {
-      uid: sessionUid.trim(),
-      email: typeof sessionEmail === 'string' ? sessionEmail.trim() : undefined,
-      emailVerified: sessionVerified === 'true',
-      customClaims: {
-        admin: sessionAdminClaim === 'true',
-      },
+      uid: verified.uid,
+      email: verified.email,
+      emailVerified: verified.email_verified === true,
+      customClaims: { admin: verified.admin === true },
     };
+  } catch (error) {
+    // Fail closed. Never accept an unverified JWT or a browser-provided role.
+    console.warn('Firebase authentication token missing, invalid, or server credentials unavailable.');
+    return null;
   }
-
-  const body = req.body;
-  if (body && typeof body === 'object') {
-    const bodyUid = body.userId || body.uid || body.customerUid || body.user?.uid;
-    if (typeof bodyUid === 'string' && bodyUid.trim().length > 0) {
-      const bodyEmail =
-        typeof (body.userEmail || body.customerEmail || body.email) === 'string'
-          ? (body.userEmail || body.customerEmail || body.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof bodyEmail === 'string' &&
-        bodyEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: bodyUid.trim(),
-        email: bodyEmail,
-        emailVerified: body.userEmailVerified === true || body.emailVerified === true,
-        customClaims: {
-          admin: Boolean(body.userRole === 'admin' || body.role === 'admin' || isAdminEmail),
-        },
-      };
-    }
-  }
-
-  const query = req.query;
-  if (query && typeof query === 'object') {
-    const queryUid = query.userId || query.uid;
-    if (typeof queryUid === 'string' && queryUid.trim().length > 0) {
-      const queryEmail =
-        typeof (query.userEmail || query.email) === 'string'
-          ? String(query.userEmail || query.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof queryEmail === 'string' &&
-        queryEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: queryUid.trim(),
-        email: queryEmail,
-        emailVerified: query.userEmailVerified === 'true' || query.emailVerified === 'true',
-        customClaims: {
-          admin: Boolean(query.userRole === 'admin' || query.role === 'admin' || isAdminEmail),
-        },
-      };
-    }
-  }
-
-  return null;
 }
 
 function getActiveCouponsMap(): Record<string, number> {
@@ -203,122 +168,16 @@ export function createApiApp() {
     res.json(result);
   });
 
-  // 3. Direct Order Checkout & Instant Entitlement Fulfillment
+  // 3. Payments: fail closed until a server-verified Cashfree flow is connected.
+  // No order can be marked paid or receive entitlements from an unverified client request.
   app.post('/api/orders/create', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
-    if (!authCtx || !authCtx.uid) {
-      res.status(401).json({
-        error: 'Authentication required. Please sign in before checking out.',
-      });
+    if (!authCtx) {
+      res.status(401).json({ error: 'Please sign in with Firebase before checking out.' });
       return;
     }
-
-    const { cartItems, couponCode, shippingAddress, customerName, customerEmail, customerPhone, paymentMethod } =
-      req.body || {};
-
-    const hasAddress = Boolean(
-      shippingAddress &&
-        typeof shippingAddress.line1 === 'string' &&
-        shippingAddress.line1.trim().length >= 3 &&
-        typeof shippingAddress.city === 'string' &&
-        shippingAddress.city.trim().length >= 2 &&
-        typeof shippingAddress.postalCode === 'string' &&
-        shippingAddress.postalCode.trim().length >= 4
-    );
-
-    const verifiedCart = calculateVerifiedCartSummary({
-      cartItems: Array.isArray(cartItems) ? cartItems : [],
-      catalogById: serverProducts,
-      couponCode,
-      activeCoupons: getActiveCouponsMap(),
-      shippingAddressProvided: hasAddress,
-    });
-
-    if (!verifiedCart.valid) {
-      res.status(400).json({ error: verifiedCart.error || 'Cart validation failed.' });
-      return;
-    }
-
-    const orderId = `ORD_${Date.now().toString().slice(-6)}_${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
-    const addressSummary = verifiedCart.hasPhysicalItems
-      ? `${shippingAddress.fullName || customerName || 'Student'}, ${shippingAddress.line1}, ${
-          shippingAddress.city
-        }, ${shippingAddress.state || ''} - ${shippingAddress.postalCode} (${
-          shippingAddress.phone || customerPhone || ''
-        })`
-      : 'Digital Delivery (My Courses & My Books Library)';
-
-    const itemSummary = verifiedCart.items
-      .map((i) => `${i.title} x${i.quantity} (₹${i.lineTotalInr})`)
-      .join(' · ');
-
-    const nowIso = new Date().toISOString();
-    const paymentRef = `${String(paymentMethod || 'ONLINE').toUpperCase()}_${Date.now().toString().slice(-6)}`;
-
-    const newOrder: ServerOrderRecord = {
-      id: orderId,
-      userId: authCtx.uid,
-      customerName: String(customerName || authCtx.email || 'Student').slice(0, 120),
-      customerEmail: String(customerEmail || authCtx.email || 'student@example.com').slice(0, 256),
-      totalAmountInr: verifiedCart.totalAmountInr,
-      paymentStatus: 'paid',
-      shipmentStatus: verifiedCart.hasPhysicalItems ? 'processing' : 'not_applicable',
-      paymentReference: paymentRef,
-      hasPhysicalItems: verifiedCart.hasPhysicalItems,
-      shippingAddressSummary: addressSummary.slice(0, 600),
-      itemSummary: itemSummary.slice(0, 1500),
-      lineItems: verifiedCart.items.map((item) => ({
-        productId: item.productId,
-        title: item.title,
-        type: item.type,
-        format: item.format,
-        quantity: item.quantity,
-        unitPriceInr: item.unitPriceInr,
-      })),
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
-
-    serverOrders.set(orderId, newOrder);
-
-    // Decrement physical stock
-    for (const item of newOrder.lineItems) {
-      const prod = serverProducts.get(item.productId);
-      if (prod && (prod.format === 'physical_book' || prod.format === 'hybrid_book')) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-        serverProducts.set(prod.id, prod);
-      }
-    }
-
-    // Grant digital entitlements immediately
-    const granted: ServerEntitlementRecord[] = [];
-    for (const item of newOrder.lineItems) {
-      if (
-        item.format === 'recorded_course' ||
-        item.format === 'digital_book' ||
-        item.format === 'hybrid_book'
-      ) {
-        const entitlementId = `${newOrder.userId}_${item.productId}`;
-        const record: ServerEntitlementRecord = {
-          id: entitlementId,
-          userId: newOrder.userId,
-          productId: item.productId,
-          productType: item.type,
-          orderId: newOrder.id,
-          downloadPath:
-            item.type === 'course'
-              ? `protected/courses/${item.productId}`
-              : `protected/books/${item.productId}/${item.productId}.pdf`,
-          grantedAt: nowIso,
-        };
-        serverEntitlements.set(entitlementId, record);
-        granted.push(record);
-      }
-    }
-
-    res.json({
-      order: newOrder,
-      entitlements: granted,
+    res.status(503).json({
+      error: 'Checkout is temporarily unavailable until Cashfree payment verification is configured. No charge has been made.',
     });
   });
 
@@ -403,19 +262,41 @@ export function createApiApp() {
       return;
     }
 
+    const secret = process.env.CONTENT_URL_SIGNING_SECRET;
+    if (!secret || !authCtx?.uid) {
+      res.status(503).json({ error: 'Secure downloads are not configured.' });
+      return;
+    }
+    const payload = `${authCtx.uid}:${product.id}:${expiresAt}`;
+    const signature = crypto.createHmac('sha256', secret).update(payload).digest('hex');
     res.json({
       allowed: true,
       reason: accessCheck.reason,
       expiresAt: new Date(expiresAt).toISOString(),
-      signedUrl: `/api/content/download-book?productId=${encodeURIComponent(
-        product.id
-      )}&uid=${encodeURIComponent(authCtx?.uid || 'student')}`,
+      signedUrl: `/api/content/download-book?productId=${encodeURIComponent(product.id)}&uid=${encodeURIComponent(authCtx.uid)}&exp=${expiresAt}&sig=${signature}`,
     });
   });
 
   app.get('/api/content/download-book', (req, res) => {
     const productId = String(req.query.productId || '');
-    const uid = String(req.query.uid || 'student');
+    const uid = String(req.query.uid || '');
+    const exp = Number(req.query.exp);
+    const sig = String(req.query.sig || '');
+    const secret = process.env.CONTENT_URL_SIGNING_SECRET;
+    if (
+      !secret || !uid || !productId || !Number.isSafeInteger(exp) ||
+      exp <= Date.now() || exp > Date.now() + 16 * 60 * 1000 ||
+      !/^[a-f0-9]{64}$/.test(sig)
+    ) {
+      res.status(403).send('This download link is missing, invalid, or expired.');
+      return;
+    }
+    const expected = crypto.createHmac('sha256', secret)
+      .update(`${uid}:${productId}:${exp}`).digest('hex');
+    if (!crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(sig, 'hex'))) {
+      res.status(403).send('Invalid download signature.');
+      return;
+    }
 
     const product = serverProducts.get(productId);
     if (!product) {
