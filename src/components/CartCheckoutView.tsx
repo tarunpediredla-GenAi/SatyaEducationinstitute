@@ -248,17 +248,36 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
       });
 
       const data = await response.json();
-      if (data?.order?.id) {
-        setPendingOrderId(data.order.id);
-      }
+      const confirmedOrderId =
+        typeof data?.order?.id === 'string' ? data.order.id.trim() : '';
+      const confirmedCashfreeOrderId =
+        typeof data?.order?.cashfreeOrderId === 'string' &&
+        data.order.cashfreeOrderId.trim()
+          ? data.order.cashfreeOrderId.trim()
+          : typeof data?.cashfreeOrderId === 'string'
+          ? data.cashfreeOrderId.trim()
+          : '';
+      const confirmedSessionId =
+        typeof data?.paymentSessionId === 'string' ? data.paymentSessionId.trim() : '';
 
-      if (!response.ok || !data.paymentSessionId) {
+      // Only allow checkout or verification if BOTH payment_session_id and cf_order_id were saved
+      if (
+        !response.ok ||
+        data?.checkoutInitialized === false ||
+        !confirmedOrderId ||
+        !confirmedSessionId ||
+        !confirmedCashfreeOrderId
+      ) {
+        setPendingOrderId(null);
         await onOrderCompleted();
         setCheckoutError(
-          data?.error || 'Could not initialize Cashfree checkout session.'
+          data?.error ||
+            'Could not initialize Cashfree checkout session (missing payment_session_id or cf_order_id).'
         );
         return;
       }
+
+      setPendingOrderId(confirmedOrderId);
 
       // Step 2: Launch Official Cashfree v3 Modal Checkout
       if (typeof window.Cashfree !== 'function') {
@@ -273,7 +292,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
       });
 
       const checkoutResult = await cashfree.checkout({
-        paymentSessionId: data.paymentSessionId,
+        paymentSessionId: confirmedSessionId,
         redirectTarget: '_modal',
       });
 
@@ -281,13 +300,13 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
         await onOrderCompleted();
         setCheckoutError(
           checkoutResult.error.message ||
-            `Payment was not completed for Order ${data.order.id}. Order status remains pending.`
+            `Payment was not completed for Order ${confirmedOrderId}. Order status remains pending.`
         );
         return;
       }
 
       // Step 3: Independently Verify Payment Status on Backend with Cashfree Server API
-      await verifyPaymentWithBackend(data.order.id);
+      await verifyPaymentWithBackend(confirmedOrderId);
     } catch (err) {
       setCheckoutError(
         err instanceof Error ? err.message : 'Network error during checkout.'

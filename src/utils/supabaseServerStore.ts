@@ -236,7 +236,6 @@ export function validateProtectedStorageFilePath(rawPath: string): string | null
   }
 
   const segments = normalized.split('/').filter(Boolean);
-  // Must have at least 3 segments: ['protected', 'courses'|'books', '<courseOrBookId>', ...'<file.ext>']
   if (segments.length < 3) {
     return null;
   }
@@ -275,10 +274,14 @@ export async function createPendingOrderInSupabase(
     throw new Error('Calculated order total_amount_paise must be a positive integer.');
   }
 
+  const initialCashfreeOrderId = order.cashfreeOrderId
+    ? String(order.cashfreeOrderId).trim() || null
+    : null;
+
   const payload = {
     id: order.id,
     firebase_uid: order.userId,
-    cashfree_order_id: null,
+    cashfree_order_id: initialCashfreeOrderId,
     total_amount_paise: totalAmountPaise,
     currency: 'INR',
     payment_status: 'pending',
@@ -329,7 +332,11 @@ export async function createPendingOrderInSupabase(
 /**
  * Persists Cashfree's real `cf_order_id` onto `public.orders.cashfree_order_id`
  * before returning the payment session to the frontend.
- * Never overwrites an existing different `cashfree_order_id`.
+ *
+ * Uses a direct atomic PostgREST PATCH (`WHERE id = $1 AND cashfree_order_id IS NULL`)
+ * so it works even if the optional `public.set_order_cashfree_id` RPC function was not
+ * created in Supabase, while strictly guaranteeing that an existing `cashfree_order_id`
+ * can NEVER be overwritten with a different ID.
  */
 export async function saveCashfreeOrderIdInSupabase(params: {
   orderId: string;
@@ -347,70 +354,64 @@ export async function saveCashfreeOrderIdInSupabase(params: {
     throw new Error('cashfreeOrderId must be Cashfree cf_order_id, not merchant orderId.');
   }
 
-  // 1. Call the database RPC `set_order_cashfree_id`
-  const rpcRes = await fetch(`${cfg.url}/rest/v1/rpc/set_order_cashfree_id`, {
-    method: 'POST',
-    headers: buildSupabaseHeaders(cfg.secretKey),
+  // 1. Check current order state in Supabase
+  const existingOrder = await getOrderFromSupabase(orderId);
+  if (!existingOrder) {
+    throw new Error(`Order ${orderId} not found in Supabase.`);
+  }
+
+  if (existingOrder.cashfreeOrderId) {
+    if (existingOrder.cashfreeOrderId === cashfreeOrderId) {
+      return existingOrder;
+    }
+    throw new Error(
+      `Order ${orderId} already has cashfree_order_id "${existingOrder.cashfreeOrderId}"; refusing to overwrite with "${cashfreeOrderId}".`
+    );
+  }
+
+  // 2. Atomically update `cashfree_order_id` ONLY where `cashfree_order_id IS NULL`
+  const patchUrl = `${cfg.url}/rest/v1/orders?id=eq.${encodeURIComponent(
+    orderId
+  )}&cashfree_order_id=is.null`;
+
+  const patchRes = await fetch(patchUrl, {
+    method: 'PATCH',
+    headers: buildSupabaseHeaders(cfg.secretKey, {
+      Prefer: 'return=representation',
+    }),
     body: JSON.stringify({
-      p_order_id: orderId,
-      p_cashfree_order_id: cashfreeOrderId,
+      cashfree_order_id: cashfreeOrderId,
+      updated_at: new Date().toISOString(),
     }),
   });
 
-  if (!rpcRes.ok) {
-    const rpcErrText = await rpcRes.text();
-    // If the RPC explicitly rejected an overwrite or invalid state, fail immediately
-    if (rpcRes.status !== 404 || !rpcErrText.includes('set_order_cashfree_id')) {
-      throw new Error(
-        `Failed to store Cashfree cf_order_id in Supabase (${rpcRes.status}): ${rpcErrText.slice(
-          0,
-          240
-        )}`
-      );
-    }
-
-    // Fallback conditional PATCH only if cashfree_order_id is NULL or already equals cashfreeOrderId
-    const patchUrl = `${cfg.url}/rest/v1/orders?id=eq.${encodeURIComponent(
-      orderId
-    )}&or=(cashfree_order_id.is.null,cashfree_order_id.eq.${encodeURIComponent(cashfreeOrderId)})`;
-
-    const patchRes = await fetch(patchUrl, {
-      method: 'PATCH',
-      headers: buildSupabaseHeaders(cfg.secretKey, {
-        Prefer: 'return=representation',
-      }),
-      body: JSON.stringify({
-        cashfree_order_id: cashfreeOrderId,
-        updated_at: new Date().toISOString(),
-      }),
-    });
-
-    if (!patchRes.ok) {
-      const patchErr = await patchRes.text();
-      throw new Error(
-        `Failed to persist Cashfree cf_order_id on order ${orderId} (${patchRes.status}): ${patchErr.slice(
-          0,
-          240
-        )}`
-      );
-    }
-
-    const patchedRows = (await patchRes.json()) as SupabaseOrderRow[];
-    if (!Array.isArray(patchedRows) || patchedRows.length === 0) {
-      throw new Error(
-        `Refusing to overwrite existing cashfree_order_id on order ${orderId}.`
-      );
-    }
-    return mapSupabaseRowToOrder(patchedRows[0]);
-  }
-
-  const updated = await getOrderFromSupabase(orderId);
-  if (!updated || updated.cashfreeOrderId !== cashfreeOrderId) {
+  if (!patchRes.ok) {
+    const patchErr = await patchRes.text();
     throw new Error(
-      `Verification of stored cashfree_order_id failed for order ${orderId}.`
+      `Failed to save Cashfree cf_order_id on order ${orderId} in Supabase (${patchRes.status}): ${patchErr.slice(
+        0,
+        240
+      )}`
     );
   }
-  return updated;
+
+  const patchedRows = (await patchRes.json()) as SupabaseOrderRow[];
+  if (Array.isArray(patchedRows) && patchedRows.length > 0) {
+    const mapped = mapSupabaseRowToOrder(patchedRows[0]);
+    if (mapped.cashfreeOrderId === cashfreeOrderId) {
+      return mapped;
+    }
+  }
+
+  // 3. Re-read to confirm whether a concurrent call set the same ID
+  const reloaded = await getOrderFromSupabase(orderId);
+  if (reloaded && reloaded.cashfreeOrderId === cashfreeOrderId) {
+    return reloaded;
+  }
+
+  throw new Error(
+    `Verification of stored cashfree_order_id failed for order ${orderId} in Supabase.`
+  );
 }
 
 /**
@@ -524,7 +525,6 @@ export async function fulfillPaidOrderAtomicallyInSupabase(params: {
   );
 
   if (expectedDigitalItems.length > 0 && entitlements.length < expectedDigitalItems.length) {
-    // Check if the user has active entitlements for all expected products (even if re-linked)
     const activeUserProductIds = new Set(
       await listUserEntitledProductIdsFromSupabase(updatedOrder.userId)
     );
@@ -554,7 +554,8 @@ export async function fulfillPaidOrderAtomicallyInSupabase(params: {
 
 /**
  * Marks a pending order as `failed` or `cancelled` in `public.orders` when Cashfree
- * reports EXPIRED, TERMINATED, or user cancellation. Never modifies a paid or refunded order.
+ * checkout initialization fails, or when Cashfree reports EXPIRED, TERMINATED, or user cancellation.
+ * Never modifies a paid or refunded order.
  */
 export async function markOrderFailedOrCancelledInSupabase(
   order: ServerOrderRecord,
@@ -608,7 +609,6 @@ export async function refundOrCancelOrderInSupabase(params: {
     return null;
   }
 
-  // 1. Execute the PostgreSQL `revoke_paid_order` RPC function
   const rpcRes = await fetch(`${cfg.url}/rest/v1/rpc/revoke_paid_order`, {
     method: 'POST',
     headers: buildSupabaseHeaders(cfg.secretKey),
@@ -628,8 +628,6 @@ export async function refundOrCancelOrderInSupabase(params: {
     );
   }
 
-  // 2. Check if this customer has any OTHER valid paid orders containing the same digital products
-  // so that refunding a duplicate/repeat order never revokes an earlier valid purchase.
   const otherPaidOrdersRes = await fetch(
     `${cfg.url}/rest/v1/orders?firebase_uid=eq.${encodeURIComponent(
       targetOrder.userId
@@ -662,7 +660,6 @@ export async function refundOrCancelOrderInSupabase(params: {
         );
 
         if (alternateValidOrder) {
-          // Restore the entitlement to reference the still-valid paid order
           await fetch(
             `${cfg.url}/rest/v1/entitlements?firebase_uid=eq.${encodeURIComponent(
               targetOrder.userId
@@ -840,7 +837,6 @@ export async function listUserOrdersAndEntitlementsFromSupabase(
     .map((r) => mapSupabaseRowToOrder(r))
     .filter((o) => o.userId === trimmedUid);
 
-  // Only expose entitlements whose backing order is still `paid` and owned by this customer
   const paidOrderIds = new Set(
     orders
       .filter((o) => o.paymentStatus === 'paid' && o.entitlementsGranted)

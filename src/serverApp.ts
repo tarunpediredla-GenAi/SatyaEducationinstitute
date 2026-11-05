@@ -89,12 +89,40 @@ function getDownloadSigningSecret(): string {
   return `satya-preview-hmac-${firebaseConfig.projectId}-${firebaseConfig.appId}`;
 }
 
+/**
+ * Inspects Cashfree environment variables and key prefixes safely (without exposing secrets)
+ * to determine the gateway mode and detect any Sandbox/Production credential mismatches.
+ */
 function getCashfreeConfig() {
   const appId = (process.env.CASHFREE_APP_ID || '').trim();
   const secretKey = (process.env.CASHFREE_SECRET_KEY || '').trim();
-  const rawEnv = (process.env.CASHFREE_ENV || 'PRODUCTION').trim().toUpperCase();
-  const isSandbox = rawEnv === 'SANDBOX' || rawEnv === 'TEST';
+  const rawEnv = (process.env.CASHFREE_ENV || '').trim().toUpperCase();
   const apiVersion = (process.env.CASHFREE_API_VERSION || '2023-08-01').trim();
+
+  const looksLikeSandboxKey =
+    secretKey.startsWith('cfsk_ma_test_') || appId.toUpperCase().startsWith('TEST');
+  const looksLikeProdKey = secretKey.startsWith('cfsk_ma_prod_');
+
+  let isSandbox: boolean;
+  if (rawEnv === 'SANDBOX' || rawEnv === 'TEST') {
+    isSandbox = true;
+  } else if (rawEnv === 'PRODUCTION' || rawEnv === 'PROD') {
+    isSandbox = false;
+  } else {
+    isSandbox = looksLikeSandboxKey;
+  }
+
+  let credentialMismatchError: string | null = null;
+  if (appId && secretKey) {
+    if (!isSandbox && looksLikeSandboxKey) {
+      credentialMismatchError =
+        'Cashfree environment mismatch: CASHFREE_ENV is set to PRODUCTION, but the configured Cashfree credentials are Sandbox/Test keys. Either set CASHFREE_ENV=SANDBOX or configure live Production credentials.';
+    } else if (isSandbox && looksLikeProdKey) {
+      credentialMismatchError =
+        'Cashfree environment mismatch: CASHFREE_ENV is set to SANDBOX, but CASHFREE_SECRET_KEY is a live Production key (cfsk_ma_prod_). Set CASHFREE_ENV=PRODUCTION for live credentials.';
+    }
+  }
+
   const baseUrl = isSandbox
     ? 'https://sandbox.cashfree.com/pg'
     : 'https://api.cashfree.com/pg';
@@ -106,7 +134,40 @@ function getCashfreeConfig() {
     baseUrl,
     mode: isSandbox ? ('sandbox' as const) : ('production' as const),
     configured: Boolean(appId && secretKey),
+    credentialMismatchError,
   };
+}
+
+function sanitizeCashfreeCustomerName(rawName: string, fallbackEmail?: string): string {
+  const candidate = rawName.includes('@')
+    ? rawName.split('@')[0]
+    : rawName || (fallbackEmail ? fallbackEmail.split('@')[0] : 'Satya Student');
+  const lettersAndSpaces = candidate
+    .replace(/[^a-zA-Z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (lettersAndSpaces.length >= 3) {
+    return lettersAndSpaces.slice(0, 90);
+  }
+  return 'Satya Student';
+}
+
+function sanitizeCashfreeIndianPhone(rawPhone: string): string {
+  const digits = String(rawPhone || '').replace(/[^0-9]/g, '');
+  const lastTen = digits.slice(-10);
+  if (/^[6-9][0-9]{9}$/.test(lastTen)) {
+    return lastTen;
+  }
+  return '9876543210';
+}
+
+function sanitizeCashfreeOrderNote(rawNote: string): string {
+  return String(rawNote || '')
+    .replace(/₹/g, 'INR ')
+    .replace(/[^a-zA-Z0-9\s.,_-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
 }
 
 function createSignedDownloadToken(
@@ -333,6 +394,18 @@ async function verifyOrderWithCashfreeServer(order: ServerOrderRecord): Promise<
     };
   }
 
+  if (cfConfig.credentialMismatchError) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: 'CREDENTIAL_MISMATCH',
+      cashfreeOrderId: '',
+      cashfreePaymentId: '',
+      verifiedAmountPaise: 0,
+      verifiedCurrency: '',
+      error: cfConfig.credentialMismatchError,
+    };
+  }
+
   const storedCashfreeOrderId = String(order.cashfreeOrderId || '').trim();
   if (!storedCashfreeOrderId) {
     return {
@@ -343,7 +416,7 @@ async function verifyOrderWithCashfreeServer(order: ServerOrderRecord): Promise<
       verifiedAmountPaise: 0,
       verifiedCurrency: '',
       error:
-        'Order does not have a registered Cashfree cf_order_id in Supabase. Checkout session was not initialized properly.',
+        `Order ${order.id} does not have a registered Cashfree cf_order_id in Supabase because its checkout session was not initialized. Please start a new checkout from your cart.`,
     };
   }
 
@@ -369,7 +442,7 @@ async function verifyOrderWithCashfreeServer(order: ServerOrderRecord): Promise<
       cashfreePaymentId: '',
       verifiedAmountPaise: 0,
       verifiedCurrency: '',
-      error: `Cashfree order verification request failed (${cfRes.status}): ${errBody.slice(0, 200)}`,
+      error: `Cashfree order verification request failed (${cfRes.status} in ${cfConfig.mode} mode): ${errBody.slice(0, 200)}`,
     };
   }
 
@@ -631,7 +704,8 @@ export function createApiApp() {
   });
 
   // 3. Create Pending Order in Supabase & Initialize Cashfree Session
-  // Saves pending order first, then saves Cashfree's real cf_order_id before returning session
+  // Validates Supabase + Cashfree config first, creates the pending order, requests the
+  // Cashfree session, and persists `cf_order_id` before returning `paymentSessionId`.
   const handleCreatePendingCashfreeOrder = async (
     req: express.Request,
     res: express.Response
@@ -639,7 +713,36 @@ export function createApiApp() {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
       res.status(401).json({
+        checkoutInitialized: false,
         error: 'Authentication required. Please log in with your account before checking out.',
+      });
+      return;
+    }
+
+    // 1. Verify Supabase and Cashfree server credentials & mode BEFORE creating any order row
+    if (!getSupabaseServerConfig()) {
+      res.status(503).json({
+        checkoutInitialized: false,
+        error:
+          'Server database credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are not configured on the server.',
+      });
+      return;
+    }
+
+    const cfConfig = getCashfreeConfig();
+    if (!cfConfig.configured) {
+      res.status(503).json({
+        checkoutInitialized: false,
+        error:
+          'Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server.',
+      });
+      return;
+    }
+
+    if (cfConfig.credentialMismatchError) {
+      res.status(503).json({
+        checkoutInitialized: false,
+        error: cfConfig.credentialMismatchError,
       });
       return;
     }
@@ -672,7 +775,10 @@ export function createApiApp() {
     });
 
     if (!verifiedCart.valid) {
-      res.status(400).json({ error: verifiedCart.error || 'Cart validation failed.' });
+      res.status(400).json({
+        checkoutInitialized: false,
+        error: verifiedCart.error || 'Cart validation failed.',
+      });
       return;
     }
 
@@ -731,6 +837,7 @@ export function createApiApp() {
       pendingOrder = await createPendingOrderInSupabase(draftOrder);
     } catch (err) {
       res.status(503).json({
+        checkoutInitialized: false,
         error:
           err instanceof Error
             ? err.message
@@ -739,20 +846,24 @@ export function createApiApp() {
       return;
     }
 
-    const cfConfig = getCashfreeConfig();
-    if (!cfConfig.configured) {
-      res.status(503).json({
-        error:
-          'Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server. Order has been saved in Supabase with status "pending" and will not be marked paid until verified with Cashfree.',
-        order: pendingOrder,
-      });
-      return;
-    }
+    const sanitizedCustomerName = sanitizeCashfreeCustomerName(
+      String(shippingAddress?.fullName || customerName || ''),
+      pendingOrder.customerEmail
+    );
+    const sanitizedPhone = sanitizeCashfreeIndianPhone(
+      String(shippingAddress?.phone || customerPhone || '')
+    );
+    const sanitizedCustomerId =
+      authCtx.uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || `cust_${Date.now()}`;
+    const sanitizedNote = sanitizeCashfreeOrderNote(pendingOrder.itemSummary);
 
-    const sanitizedPhone =
-      String(shippingAddress?.phone || customerPhone || '9876543210')
-        .replace(/[^0-9]/g, '')
-        .slice(-10) || '9876543210';
+    // Cashfree Production requires https:// for return_url
+    const validReturnUrl =
+      typeof returnUrl === 'string' &&
+      (returnUrl.startsWith('https://') ||
+        (cfConfig.mode === 'sandbox' && returnUrl.startsWith('http://')))
+        ? returnUrl
+        : undefined;
 
     try {
       const cfCreateRes = await fetch(`${cfConfig.baseUrl}/orders`, {
@@ -766,30 +877,39 @@ export function createApiApp() {
         },
         body: JSON.stringify({
           order_id: pendingOrder.id,
-          order_amount: pendingOrder.totalAmountInr,
+          order_amount: Number(pendingOrder.totalAmountInr.toFixed(2)),
           order_currency: 'INR',
           customer_details: {
-            customer_id: authCtx.uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48),
-            customer_name: pendingOrder.customerName,
+            customer_id: sanitizedCustomerId,
+            customer_name: sanitizedCustomerName,
             customer_email: pendingOrder.customerEmail,
-            customer_phone: sanitizedPhone.length === 10 ? sanitizedPhone : '9876543210',
+            customer_phone: sanitizedPhone,
           },
-          order_meta: {
-            return_url:
-              typeof returnUrl === 'string' && returnUrl.startsWith('http')
-                ? returnUrl
-                : undefined,
-          },
-          order_note: pendingOrder.itemSummary.slice(0, 200),
+          ...(validReturnUrl
+            ? {
+                order_meta: {
+                  return_url: validReturnUrl,
+                },
+              }
+            : {}),
+          order_note: sanitizedNote,
         }),
       });
 
-      const cfData = (await cfCreateRes.json()) as {
+      const rawResponseText = await cfCreateRes.text();
+      let cfData: {
         payment_session_id?: string;
         cf_order_id?: string | number;
         order_id?: string;
         message?: string;
-      };
+        code?: string;
+        type?: string;
+      } = {};
+      try {
+        cfData = JSON.parse(rawResponseText);
+      } catch {
+        // Non-JSON error body
+      }
 
       const paymentSessionId = String(cfData.payment_session_id || '').trim();
       const realCashfreeOrderId =
@@ -798,19 +918,34 @@ export function createApiApp() {
           : '';
 
       if (!cfCreateRes.ok || !paymentSessionId || !realCashfreeOrderId) {
+        // Mark the order as 'failed' in Supabase so it does not remain as an uninitialized 'pending' order
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, 'failed');
+
+        const safeCfDetails = [
+          cfData.message,
+          cfData.code ? `(code: ${cfData.code})` : '',
+          cfData.type ? `[${cfData.type}]` : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+
         res.status(502).json({
+          checkoutInitialized: false,
+          cashfreeMode: cfConfig.mode,
           error:
-            cfData.message ||
-            'Failed to initialize payment session with Cashfree Payment Gateway (missing payment_session_id or cf_order_id).',
-          order: pendingOrder,
+            safeCfDetails
+              ? `Cashfree checkout initialization failed (HTTP ${cfCreateRes.status} in ${cfConfig.mode} mode): ${safeCfDetails}`
+              : `Cashfree checkout initialization failed (HTTP ${cfCreateRes.status} in ${cfConfig.mode} mode). Please verify your Cashfree API credentials and environment mode.`,
         });
         return;
       }
 
       if (cfData.order_id && String(cfData.order_id).trim() !== pendingOrder.id) {
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, 'failed');
         res.status(502).json({
+          checkoutInitialized: false,
           error: 'Cashfree returned a mismatched merchant order_id.',
-          order: pendingOrder,
         });
         return;
       }
@@ -822,28 +957,41 @@ export function createApiApp() {
           cashfreeOrderId: realCashfreeOrderId,
         });
       } catch (saveErr) {
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, 'failed');
         res.status(503).json({
+          checkoutInitialized: false,
           error:
             saveErr instanceof Error
               ? saveErr.message
               : 'Failed to store Cashfree cf_order_id in Supabase before checkout.',
-          order: pendingOrder,
+        });
+        return;
+      }
+
+      if (!pendingOrder.cashfreeOrderId || pendingOrder.cashfreeOrderId !== realCashfreeOrderId) {
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, 'failed');
+        res.status(503).json({
+          checkoutInitialized: false,
+          error: 'Cashfree cf_order_id could not be verified in Supabase after saving.',
         });
         return;
       }
 
       res.json({
+        checkoutInitialized: true,
         order: pendingOrder,
+        cashfreeOrderId: pendingOrder.cashfreeOrderId,
         paymentSessionId,
         cashfreeMode: cfConfig.mode,
       });
     } catch (err) {
+      await markOrderFailedOrCancelledInSupabase(pendingOrder, 'failed');
       res.status(502).json({
+        checkoutInitialized: false,
         error:
           err instanceof Error
-            ? `Cashfree connection error: ${err.message}`
+            ? `Cashfree connection error (${cfConfig.mode} mode): ${err.message}`
             : 'Unable to reach Cashfree Payment Gateway.',
-        order: pendingOrder,
       });
     }
   };
@@ -910,6 +1058,17 @@ export function createApiApp() {
         order,
         entitlements: entitlements.filter((e) => e.orderId === order!.id),
         alreadyFulfilled: true,
+      });
+      return;
+    }
+
+    // Refuse to verify an order that never received a Cashfree cf_order_id during checkout initialization
+    if (!order.cashfreeOrderId) {
+      res.status(400).json({
+        verified: false,
+        cashfreeOrderStatus: 'MISSING_CF_ORDER_ID',
+        error: `Order ${order.id} never received a Cashfree checkout session (cashfree_order_id is NULL). Please start a new checkout from your cart.`,
+        order,
       });
       return;
     }
@@ -1180,7 +1339,6 @@ export function createApiApp() {
     const subjectUid = authCtx?.uid || 'preview';
 
     if (product.type === 'course' && lessonObj) {
-      // Ensure non-preview lessons have a valid private file path on the server
       if (!lessonObj.isFreePreview) {
         const verifiedFilePath = resolveVerifiedProtectedFilePath(lessonObj.videoStoragePath);
         if (!verifiedFilePath) {
@@ -1227,8 +1385,6 @@ export function createApiApp() {
   });
 
   // 5B. Time-Limited, User-Bound Course Video Stream Endpoint
-  // Re-verifies active entitlement in Supabase and redirects to a 15-minute signed URL
-  // from the private `protected-media` Supabase Storage bucket.
   app.get('/api/content/stream-video', async (req, res) => {
     const productId = String(req.query.productId || '');
     const lessonId = String(req.query.lessonId || '');
@@ -1252,7 +1408,6 @@ export function createApiApp() {
       return;
     }
 
-    // Free preview lessons stream directly from their public preview video URL
     if (lessonObj.isFreePreview) {
       const previewUrl =
         lessonObj.videoStoragePath.startsWith('http')
@@ -1264,7 +1419,6 @@ export function createApiApp() {
       return;
     }
 
-    // For paid lessons, re-verify that the user's entitlement has not been revoked/refunded
     const isAdminUid = serverAdminUids.has(verification.uid);
     if (!isAdminUid) {
       try {
@@ -1287,7 +1441,6 @@ export function createApiApp() {
       }
     }
 
-    // Resolve the exact private Storage file path from the server-side lesson record
     const verifiedObjectPath = resolveVerifiedProtectedFilePath(lessonObj.videoStoragePath);
     if (!verifiedObjectPath) {
       res
@@ -1316,8 +1469,6 @@ export function createApiApp() {
       res.redirect(302, supabaseSignedUrl);
       return;
     } catch {
-      // If the sample course video file has not been uploaded to `protected-media` yet,
-      // fall back to the course preview stream only after entitlement & Supabase config passed.
       const fallbackUrl =
         product.previewVideoUrl ||
         'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
@@ -1343,7 +1494,6 @@ export function createApiApp() {
       return;
     }
 
-    // Re-verify that the user's entitlement is active and not refunded/revoked
     let entitledDownloadPath = `protected/books/${product.id}/${product.id}.pdf`;
     const isAdminUid = serverAdminUids.has(verification.uid);
     if (!isAdminUid) {
@@ -1374,7 +1524,6 @@ export function createApiApp() {
       }
     }
 
-    // Attempt to issue a 15-minute signed URL from the private `protected-media` bucket first
     if (getSupabaseServerConfig()) {
       try {
         const signedBookUrl = await createSupabaseSignedStorageUrl({
@@ -1418,7 +1567,7 @@ export function createApiApp() {
     res.send(content);
   });
 
-  // 6. Admin Panel Overview & Mutation Endpoints (Strictly Server-Verified Admin Only + Supabase Orders)
+  // 6. Admin Panel Overview & Mutation Endpoints
   app.get('/api/admin/overview', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
