@@ -111,7 +111,11 @@ export function canUserPerformAdminOperation(auth: AuthTokenContext | null | und
   if (auth.customClaims?.admin === true) {
     return true;
   }
-  if (auth.email && auth.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
+  if (
+    auth.email &&
+    auth.emailVerified === true &&
+    auth.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()
+  ) {
     return true;
   }
   if (auth.isAdminRecordPresent === true) {

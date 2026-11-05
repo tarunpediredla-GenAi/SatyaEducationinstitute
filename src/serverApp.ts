@@ -1,6 +1,7 @@
 import express from 'express';
 import crypto from 'node:crypto';
 import dotenv from 'dotenv';
+import firebaseConfig from '../firebase-applet-config.json';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   calculateVerifiedCartSummary,
@@ -75,74 +76,147 @@ export interface ServerEntitlementRecord {
 
 const serverOrders = new Map<string, ServerOrderRecord>();
 const serverEntitlements = new Map<string, ServerEntitlementRecord>();
+const serverAdminUids = new Set<string>();
 
-async function resolveServerAuthContext(req: express.Request): Promise<AuthTokenContext | null> {
-  const sessionUid =
-    req.headers['x-satya-uid'] ||
-    req.headers['x-user-id'] ||
-    req.headers['x-user-uid'];
-  const sessionEmail = req.headers['x-satya-email'];
-  const sessionVerified = req.headers['x-satya-email-verified'];
-  const sessionAdminClaim = req.headers['x-satya-admin-claim'];
+// Short-lived cache for verified Firebase ID tokens
+const verifiedTokenCache = new Map<
+  string,
+  { authCtx: AuthTokenContext; expiresAtMs: number }
+>();
 
-  if (typeof sessionUid === 'string' && sessionUid.trim().length > 0) {
-    return {
-      uid: sessionUid.trim(),
-      email: typeof sessionEmail === 'string' ? sessionEmail.trim() : undefined,
-      emailVerified: sessionVerified === 'true',
-      customClaims: {
-        admin: sessionAdminClaim === 'true',
-      },
+const DOWNLOAD_SIGNING_SECRET =
+  process.env.FIREBASE_PRIVATE_KEY ||
+  crypto.randomBytes(32).toString('hex');
+
+function createSignedDownloadToken(uid: string, productId: string, expiresAtMs: number): string {
+  const payload = `${uid}:${productId}:${expiresAtMs}`;
+  const sig = crypto
+    .createHmac('sha256', DOWNLOAD_SIGNING_SECRET)
+    .update(payload)
+    .digest('hex');
+  return Buffer.from(`${payload}:${sig}`).toString('base64url');
+}
+
+function verifySignedDownloadToken(
+  token: string,
+  expectedProductId: string
+): { valid: boolean; uid?: string } {
+  try {
+    const decoded = Buffer.from(token, 'base64url').toString('utf8');
+    const parts = decoded.split(':');
+    if (parts.length !== 4) return { valid: false };
+    const [uid, productId, expStr, providedSig] = parts;
+    if (productId !== expectedProductId) return { valid: false };
+    const expMs = Number(expStr);
+    if (!Number.isFinite(expMs) || Date.now() > expMs) return { valid: false };
+
+    const expectedSig = crypto
+      .createHmac('sha256', DOWNLOAD_SIGNING_SECRET)
+      .update(`${uid}:${productId}:${expStr}`)
+      .digest('hex');
+
+    if (
+      providedSig.length !== expectedSig.length ||
+      !crypto.timingSafeEqual(Buffer.from(providedSig), Buffer.from(expectedSig))
+    ) {
+      return { valid: false };
+    }
+    return { valid: true, uid };
+  } catch {
+    return { valid: false };
+  }
+}
+
+/**
+ * Verifies the Firebase Authentication ID token against Google Identity Toolkit
+ * for project `famous-campaign-mcbh2`. Never trusts unverified client headers,
+ * body fields, or query parameters.
+ */
+async function resolveServerAuthContext(
+  req: express.Request
+): Promise<AuthTokenContext | null> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    return null;
+  }
+
+  const idToken = authHeader.slice('Bearer '.length).trim();
+  if (!idToken) return null;
+
+  const cached = verifiedTokenCache.get(idToken);
+  if (cached && cached.expiresAtMs > Date.now()) {
+    return cached.authCtx;
+  }
+
+  try {
+    const apiKey = firebaseConfig.apiKey;
+    const response = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+      }
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = (await response.json()) as {
+      users?: Array<{
+        localId?: string;
+        email?: string;
+        emailVerified?: boolean;
+        customAttributes?: string;
+      }>;
     };
-  }
 
-  const body = req.body;
-  if (body && typeof body === 'object') {
-    const bodyUid = body.userId || body.uid || body.customerUid || body.user?.uid;
-    if (typeof bodyUid === 'string' && bodyUid.trim().length > 0) {
-      const bodyEmail =
-        typeof (body.userEmail || body.customerEmail || body.email) === 'string'
-          ? (body.userEmail || body.customerEmail || body.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof bodyEmail === 'string' &&
-        bodyEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: bodyUid.trim(),
-        email: bodyEmail,
-        emailVerified: body.userEmailVerified === true || body.emailVerified === true,
-        customClaims: {
-          admin: Boolean(body.userRole === 'admin' || body.role === 'admin' || isAdminEmail),
-        },
-      };
+    const fbUser = data.users?.[0];
+    if (!fbUser || !fbUser.localId) {
+      return null;
     }
-  }
 
-  const query = req.query;
-  if (query && typeof query === 'object') {
-    const queryUid = query.userId || query.uid;
-    if (typeof queryUid === 'string' && queryUid.trim().length > 0) {
-      const queryEmail =
-        typeof (query.userEmail || query.email) === 'string'
-          ? String(query.userEmail || query.email).trim()
-          : undefined;
-      const isAdminEmail =
-        typeof queryEmail === 'string' &&
-        queryEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-      return {
-        uid: queryUid.trim(),
-        email: queryEmail,
-        emailVerified: query.userEmailVerified === 'true' || query.emailVerified === 'true',
-        customClaims: {
-          admin: Boolean(query.userRole === 'admin' || query.role === 'admin' || isAdminEmail),
-        },
-      };
+    let customAdminClaim = false;
+    if (fbUser.customAttributes) {
+      try {
+        const parsedClaims = JSON.parse(fbUser.customAttributes);
+        customAdminClaim = parsedClaims?.admin === true || parsedClaims?.role === 'admin';
+      } catch {
+        // ignore invalid customAttributes JSON
+      }
     }
-  }
 
-  return null;
+    const email = fbUser.email?.trim();
+    const emailVerified = Boolean(fbUser.emailVerified);
+    const isVerifiedBootstrappedAdmin =
+      Boolean(email) &&
+      emailVerified === true &&
+      email!.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+
+    if (isVerifiedBootstrappedAdmin || customAdminClaim) {
+      serverAdminUids.add(fbUser.localId);
+    }
+
+    const authCtx: AuthTokenContext = {
+      uid: fbUser.localId,
+      email,
+      emailVerified,
+      customClaims: {
+        admin: customAdminClaim,
+      },
+      isAdminRecordPresent: serverAdminUids.has(fbUser.localId),
+    };
+
+    verifiedTokenCache.set(idToken, {
+      authCtx,
+      expiresAtMs: Date.now() + 2 * 60 * 1000,
+    });
+
+    return authCtx;
+  } catch {
+    return null;
+  }
 }
 
 function getActiveCouponsMap(): Record<string, number> {
@@ -153,6 +227,48 @@ function getActiveCouponsMap(): Record<string, number> {
     }
   }
   return map;
+}
+
+function fulfillPaidOrderEntitlements(order: ServerOrderRecord): ServerEntitlementRecord[] {
+  if (order.paymentStatus !== 'paid') {
+    return [];
+  }
+
+  // Decrement physical stock
+  for (const item of order.lineItems) {
+    const prod = serverProducts.get(item.productId);
+    if (prod && (prod.format === 'physical_book' || prod.format === 'hybrid_book')) {
+      prod.stock = Math.max(0, prod.stock - item.quantity);
+      serverProducts.set(prod.id, prod);
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+  const granted: ServerEntitlementRecord[] = [];
+  for (const item of order.lineItems) {
+    if (
+      item.format === 'recorded_course' ||
+      item.format === 'digital_book' ||
+      item.format === 'hybrid_book'
+    ) {
+      const entitlementId = `${order.userId}_${item.productId}`;
+      const record: ServerEntitlementRecord = {
+        id: entitlementId,
+        userId: order.userId,
+        productId: item.productId,
+        productType: item.type,
+        orderId: order.id,
+        downloadPath:
+          item.type === 'course'
+            ? `protected/courses/${item.productId}`
+            : `protected/books/${item.productId}/${item.productId}.pdf`,
+        grantedAt: nowIso,
+      };
+      serverEntitlements.set(entitlementId, record);
+      granted.push(record);
+    }
+  }
+  return granted;
 }
 
 export function createApiApp() {
@@ -179,6 +295,24 @@ export function createApiApp() {
 
   app.use(express.json({ limit: '2mb' }));
 
+  // 0. Server-Verified Authentication Session & Role Endpoint
+  app.get('/api/auth/session', async (req, res) => {
+    const authCtx = await resolveServerAuthContext(req);
+    if (!authCtx || !authCtx.uid) {
+      res.status(401).json({ authenticated: false, error: 'Invalid or missing Firebase ID token.' });
+      return;
+    }
+
+    const isAdmin = canUserPerformAdminOperation(authCtx);
+    res.json({
+      authenticated: true,
+      uid: authCtx.uid,
+      email: authCtx.email || '',
+      emailVerified: Boolean(authCtx.emailVerified),
+      role: isAdmin ? 'admin' : 'student',
+    });
+  });
+
   // 1. Public Catalog & Storefront Data Endpoint
   app.get('/api/catalog', (_req, res) => {
     res.json({
@@ -203,18 +337,24 @@ export function createApiApp() {
     res.json(result);
   });
 
-  // 3. Direct Order Checkout & Instant Entitlement Fulfillment
+  // 3. Order Checkout & Verified Entitlement Fulfillment
   app.post('/api/orders/create', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
       res.status(401).json({
-        error: 'Authentication required. Please sign in before checking out.',
+        error: 'Authentication required. Please sign in with your account before checking out.',
       });
       return;
     }
 
-    const { cartItems, couponCode, shippingAddress, customerName, customerEmail, customerPhone, paymentMethod } =
-      req.body || {};
+    const {
+      cartItems,
+      couponCode,
+      shippingAddress,
+      customerName,
+      customerPhone,
+      paymentMethod,
+    } = req.body || {};
 
     const hasAddress = Boolean(
       shippingAddress &&
@@ -239,9 +379,12 @@ export function createApiApp() {
       return;
     }
 
-    const orderId = `ORD_${Date.now().toString().slice(-6)}_${crypto.randomBytes(2).toString('hex').toUpperCase()}`;
+    const orderId = `ORD_${Date.now().toString().slice(-6)}_${crypto
+      .randomBytes(2)
+      .toString('hex')
+      .toUpperCase()}`;
     const addressSummary = verifiedCart.hasPhysicalItems
-      ? `${shippingAddress.fullName || customerName || 'Student'}, ${shippingAddress.line1}, ${
+      ? `${shippingAddress.fullName || customerName || 'Customer'}, ${shippingAddress.line1}, ${
           shippingAddress.city
         }, ${shippingAddress.state || ''} - ${shippingAddress.postalCode} (${
           shippingAddress.phone || customerPhone || ''
@@ -253,13 +396,15 @@ export function createApiApp() {
       .join(' · ');
 
     const nowIso = new Date().toISOString();
-    const paymentRef = `${String(paymentMethod || 'ONLINE').toUpperCase()}_${Date.now().toString().slice(-6)}`;
+    const paymentRef = `${String(paymentMethod || 'ONLINE').toUpperCase()}_${Date.now()
+      .toString()
+      .slice(-6)}`;
 
     const newOrder: ServerOrderRecord = {
       id: orderId,
       userId: authCtx.uid,
       customerName: String(customerName || authCtx.email || 'Student').slice(0, 120),
-      customerEmail: String(customerEmail || authCtx.email || 'student@example.com').slice(0, 256),
+      customerEmail: String(authCtx.email || 'student@example.com').slice(0, 256),
       totalAmountInr: verifiedCart.totalAmountInr,
       paymentStatus: 'paid',
       shipmentStatus: verifiedCart.hasPhysicalItems ? 'processing' : 'not_applicable',
@@ -280,41 +425,7 @@ export function createApiApp() {
     };
 
     serverOrders.set(orderId, newOrder);
-
-    // Decrement physical stock
-    for (const item of newOrder.lineItems) {
-      const prod = serverProducts.get(item.productId);
-      if (prod && (prod.format === 'physical_book' || prod.format === 'hybrid_book')) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-        serverProducts.set(prod.id, prod);
-      }
-    }
-
-    // Grant digital entitlements immediately
-    const granted: ServerEntitlementRecord[] = [];
-    for (const item of newOrder.lineItems) {
-      if (
-        item.format === 'recorded_course' ||
-        item.format === 'digital_book' ||
-        item.format === 'hybrid_book'
-      ) {
-        const entitlementId = `${newOrder.userId}_${item.productId}`;
-        const record: ServerEntitlementRecord = {
-          id: entitlementId,
-          userId: newOrder.userId,
-          productId: item.productId,
-          productType: item.type,
-          orderId: newOrder.id,
-          downloadPath:
-            item.type === 'course'
-              ? `protected/courses/${item.productId}`
-              : `protected/books/${item.productId}/${item.productId}.pdf`,
-          grantedAt: nowIso,
-        };
-        serverEntitlements.set(entitlementId, record);
-        granted.push(record);
-      }
-    }
+    const granted = fulfillPaidOrderEntitlements(newOrder);
 
     res.json({
       order: newOrder,
@@ -322,7 +433,7 @@ export function createApiApp() {
     });
   });
 
-  // 4. User Orders & Entitlements Endpoint
+  // 4. User Orders & Entitlements Endpoint (Strictly isolated to authenticated user's UID)
   app.get('/api/user/library', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
@@ -403,23 +514,35 @@ export function createApiApp() {
       return;
     }
 
+    const downloadToken = createSignedDownloadToken(
+      authCtx?.uid || 'preview',
+      product.id,
+      expiresAt
+    );
+
     res.json({
       allowed: true,
       reason: accessCheck.reason,
       expiresAt: new Date(expiresAt).toISOString(),
       signedUrl: `/api/content/download-book?productId=${encodeURIComponent(
         product.id
-      )}&uid=${encodeURIComponent(authCtx?.uid || 'student')}`,
+      )}&token=${encodeURIComponent(downloadToken)}`,
     });
   });
 
   app.get('/api/content/download-book', (req, res) => {
     const productId = String(req.query.productId || '');
-    const uid = String(req.query.uid || 'student');
+    const token = String(req.query.token || '');
 
     const product = serverProducts.get(productId);
     if (!product) {
       res.status(404).send('Book not found.');
+      return;
+    }
+
+    const verification = verifySignedDownloadToken(token, product.id);
+    if (!verification.valid || !verification.uid) {
+      res.status(403).send('Forbidden: Valid signed download token required.');
       return;
     }
 
@@ -432,7 +555,7 @@ export function createApiApp() {
       `Category: ${product.category}`,
       `Language: ${product.language}`,
       `Format: ${product.coverType}`,
-      `Licensed To Student ID: ${uid}`,
+      `Licensed To Student UID: ${verification.uid}`,
       `Issued At: ${new Date().toISOString()}`,
       `--------------------------------------------------------------------`,
       `SYNOPSIS & CHAPTER CONTENT:`,
@@ -450,12 +573,12 @@ export function createApiApp() {
     res.send(content);
   });
 
-  // 6. Admin Panel Overview & Mutation Endpoints
+  // 6. Admin Panel Overview & Mutation Endpoints (Strictly Server-Verified Admin Only)
   app.get('/api/admin/overview', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
       res.status(403).json({
-        error: 'Forbidden: Administrator privileges required.',
+        error: 'Forbidden: Verified administrator privileges required.',
       });
       return;
     }
@@ -489,7 +612,7 @@ export function createApiApp() {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
       res.status(403).json({
-        error: 'Forbidden: Only administrators can perform catalog or order mutations.',
+        error: 'Forbidden: Only verified administrators can perform catalog or order mutations.',
       });
       return;
     }
@@ -518,7 +641,8 @@ export function createApiApp() {
           duration: prod.duration,
           introduction: existingCourse?.introduction || prod.description,
           syllabusSummary:
-            existingCourse?.syllabusSummary || 'Module 1: Core Foundations · Module 2: Practical Implementation',
+            existingCourse?.syllabusSummary ||
+            'Module 1: Core Foundations · Module 2: Practical Implementation',
           status: prod.status,
         });
       }

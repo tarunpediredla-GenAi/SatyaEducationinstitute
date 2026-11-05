@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (
+          (request.auth.token.email == "tarunpediredla9966@gmail.com" && request.auth.token.email_verified == true) ||
+          (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+        );
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'phone', 'role', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'role', 'updatedAt']) &&
+        data.uid is string && data.uid == userId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 256 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        data.role in ['student', 'admin'] &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidStorageAsset(data, assetId) {
+      return data.keys().hasAll(['id', 'fileName', 'storagePath', 'downloadUrl', 'contentType', 'sizeBytes', 'uploadedByUid', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'fileName', 'storagePath', 'downloadUrl', 'contentType', 'sizeBytes', 'uploadedByUid', 'createdAt']) &&
+        data.id is string && data.id == assetId &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 256 &&
+        data.storagePath is string && data.storagePath.size() >= 1 && data.storagePath.size() <= 512 &&
+        data.downloadUrl is string && data.downloadUrl.size() >= 1 && data.downloadUrl.size() <= 2048 &&
+        data.contentType is string && data.contentType.size() >= 1 && data.contentType.size() <= 128 &&
+        data.sizeBytes is number && data.sizeBytes >= 0 && data.sizeBytes <= 524288000 &&
+        data.uploadedByUid is string && data.uploadedByUid == request.auth.uid &&
+        data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidUserProfile(request.resource.data, userId) &&
+        ((isOwner(userId) && request.resource.data.role == 'student') || isAdmin());
+      allow update: if isValidUserProfile(request.resource.data, userId) &&
+        request.resource.data.uid == resource.data.uid &&
+        request.resource.data.email == resource.data.email &&
+        ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
+      allow delete: if isAdmin();
+    }
+
+    match /storageAssets/{assetId} {
+      allow get, list: if isAuthenticated();
+      allow create: if isAdmin() && isValidStorageAsset(request.resource.data, assetId);
+      allow update: if isAdmin() &&
+        isValidStorageAsset(request.resource.data, assetId) &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+    }
+  }
+}

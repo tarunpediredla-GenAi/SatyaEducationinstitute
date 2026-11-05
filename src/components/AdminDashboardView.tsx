@@ -10,6 +10,11 @@ import {
   Truck,
   Users,
   Megaphone,
+  Upload,
+  Cloud,
+  Trash2,
+  ExternalLink,
+  Copy,
 } from 'lucide-react';
 import {
   canUserPerformAdminOperation,
@@ -19,6 +24,18 @@ import {
   type ProductStatus,
   type ProductType,
 } from '../utils/commerceRules';
+import {
+  db,
+  storage,
+  storageRef,
+  deleteObject,
+  collection,
+  getDocs,
+  deleteDoc,
+  doc,
+  uploadFileToFirebaseStorage,
+  type UploadedStorageAsset,
+} from '../firebase';
 import type { CategoryItem, PromotionalBanner } from '../data/sampleCatalog';
 import type { ActiveUserSession } from './AuthModal';
 import type { UserOrderSummary } from './UserDashboardView';
@@ -44,10 +61,28 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   onNavigateHome,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'courses' | 'books' | 'categories' | 'orders' | 'customers' | 'banners'
+    | 'overview'
+    | 'courses'
+    | 'books'
+    | 'storage'
+    | 'categories'
+    | 'orders'
+    | 'customers'
+    | 'banners'
   >('overview');
 
   const [adminOrders, setAdminOrders] = useState<UserOrderSummary[]>([]);
+  const [storageAssets, setStorageAssets] = useState<UploadedStorageAsset[]>([]);
+  const [uploadingLessonVideo, setUploadingLessonVideo] = useState(false);
+  const [lessonUploadProgress, setLessonUploadProgress] = useState<number>(0);
+  const [uploadingBookFile, setUploadingBookFile] = useState(false);
+  const [bookUploadProgress, setBookUploadProgress] = useState<number>(0);
+  const [uploadedBookUrl, setUploadedBookUrl] = useState<string>('');
+  const [uploadingCloudAsset, setUploadingCloudAsset] = useState(false);
+  const [cloudUploadProgress, setCloudUploadProgress] = useState<number>(0);
+  const [cloudFolder, setCloudFolder] = useState<
+    'protected/courses' | 'protected/books' | 'public/covers' | 'public/previews'
+  >('protected/courses');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -99,16 +134,25 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       customClaims: { admin: user.role === 'admin' },
     });
 
+  const fetchStorageAssets = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'storageAssets'));
+      const list: UploadedStorageAsset[] = [];
+      snap.forEach((docSnap) => {
+        list.push(docSnap.data() as UploadedStorageAsset);
+      });
+      list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      setStorageAssets(list);
+    } catch {
+      // Ignore if Firestore rules or collection is empty
+    }
+  };
+
   const fetchAdminOverview = async () => {
     if (!user || !isAuthorizedAdmin) return;
     try {
       const authHeaders = await getClientAuthHeaders(user);
-      const queryParams = new URLSearchParams({
-        userId: user.uid,
-        userEmail: user.email,
-        userRole: user.role,
-      });
-      const res = await fetch(`/api/admin/overview?${queryParams.toString()}`, {
+      const res = await fetch('/api/admin/overview', {
         headers: authHeaders,
       });
       if (res.ok) {
@@ -122,6 +166,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   useEffect(() => {
     fetchAdminOverview();
+    fetchStorageAssets();
   }, [user?.uid, isAuthorizedAdmin]);
 
   if (!isAuthorizedAdmin) {
@@ -242,6 +287,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             { id: 'overview', label: 'Analytics & Summary' },
             { id: 'courses', label: 'Courses & Recordings' },
             { id: 'books', label: 'Books, Storybooks & Stock' },
+            { id: 'storage', label: `Firebase Storage (${storageAssets.length})` },
             { id: 'categories', label: `Categories (${categories.length})` },
             { id: 'orders', label: `Orders & Shipments (${adminOrders.length})` },
             { id: 'customers', label: `Customers (${uniqueCustomers.length})` },
@@ -468,7 +514,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 type="text"
                 value={prodTitle}
                 onChange={(e) => setProdTitle(e.target.value)}
-                placeholder="e.g. [Sample Course] Mastering SQL & PostgreSQL Indexing"
+                placeholder="e.g. Mastering SQL & PostgreSQL Indexing"
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
               />
             </div>
@@ -678,9 +724,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               />
             </div>
 
-            <div>
-              <label htmlFor="admin-lesson-path" className="block text-xs font-semibold mb-1">
-                Video Recording URL or Path (MP4/WebM)
+            <div className="space-y-2">
+              <label htmlFor="admin-lesson-path" className="block text-xs font-semibold">
+                Video Recording URL or Firebase Storage Path (MP4/WebM)
               </label>
               <input
                 id="admin-lesson-path"
@@ -689,6 +735,63 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 onChange={(e) => setLessonVideoPath(e.target.value)}
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg font-mono-tabular"
               />
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-[#0A192F] flex items-center gap-1.5">
+                    <Cloud className="w-3.5 h-3.5 text-[#B48A1E]" />
+                    <span>Upload Video Directly to Firebase Storage</span>
+                  </span>
+                  {uploadingLessonVideo && (
+                    <span className="text-[11px] font-mono-tabular font-bold text-[#B48A1E]">
+                      {lessonUploadProgress}%
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm,video/*"
+                  disabled={uploadingLessonVideo}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file || !user) return;
+                    setUploadingLessonVideo(true);
+                    setLessonUploadProgress(0);
+                    setErrorMessage(null);
+                    try {
+                      const uploaded = await uploadFileToFirebaseStorage({
+                        file,
+                        folder: 'protected/courses',
+                        subPath: lessonCourseId,
+                        uploadedByUid: user.uid,
+                        isAdmin: true,
+                        onProgress: (pct) => setLessonUploadProgress(pct),
+                      });
+                      setLessonVideoPath(uploaded.downloadUrl);
+                      setStorageAssets((prev) => [uploaded, ...prev]);
+                      setStatusMessage(
+                        `Uploaded "${file.name}" to Firebase Storage (${uploaded.storagePath}).`
+                      );
+                    } catch (err) {
+                      setErrorMessage(
+                        err instanceof Error
+                          ? `Firebase Storage upload error: ${err.message}`
+                          : 'Firebase Storage upload failed.'
+                      );
+                    } finally {
+                      setUploadingLessonVideo(false);
+                    }
+                  }}
+                  className="block w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-[#0A192F] file:text-white hover:file:bg-slate-800"
+                />
+                {uploadingLessonVideo && (
+                  <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#D4AF37] transition-all"
+                      style={{ width: `${lessonUploadProgress}%` }}
+                    />
+                  </div>
+                )}
+              </div>
             </div>
 
             <label className="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
@@ -702,7 +805,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
             <button
               type="submit"
-              className="w-full py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800"
+              disabled={uploadingLessonVideo}
+              className="w-full py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50"
             >
               Add Lesson to Course Syllabus
             </button>
@@ -738,7 +842,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 authorOrInstructor: prodInstructor.trim() || 'Satya Narayana',
                 shortDescription:
                   prodShortDesc.trim() ||
-                  'Sample educational edition available in physical or digital format.',
+                  'Authoritative educational edition available in physical or digital format.',
                 description:
                   prodDesc.trim() ||
                   'Complete reference book with structured chapters and exercises.',
@@ -807,7 +911,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 type="text"
                 value={prodTitle}
                 onChange={(e) => setProdTitle(e.target.value)}
-                placeholder="e.g. [Sample Book] System Design & Cloud SQL Reference"
+                placeholder="e.g. System Design & Cloud SQL Reference"
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
               />
             </div>
@@ -856,9 +960,66 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </div>
             </div>
 
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold text-[#0A192F] flex items-center gap-1.5">
+                  <Cloud className="w-3.5 h-3.5 text-[#B48A1E]" />
+                  <span>Upload Digital Book (PDF/EPUB) or Cover to Firebase Storage</span>
+                </span>
+                {uploadingBookFile && (
+                  <span className="text-[11px] font-mono-tabular font-bold text-[#B48A1E]">
+                    {bookUploadProgress}%
+                  </span>
+                )}
+              </div>
+              <input
+                type="file"
+                accept=".pdf,.epub,image/*"
+                disabled={uploadingBookFile}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file || !user) return;
+                  setUploadingBookFile(true);
+                  setBookUploadProgress(0);
+                  setErrorMessage(null);
+                  try {
+                    const uploaded = await uploadFileToFirebaseStorage({
+                      file,
+                      folder: file.type.startsWith('image/')
+                        ? 'public/covers'
+                        : 'protected/books',
+                      uploadedByUid: user.uid,
+                      isAdmin: true,
+                      onProgress: (pct) => setBookUploadProgress(pct),
+                    });
+                    setUploadedBookUrl(uploaded.downloadUrl);
+                    setStorageAssets((prev) => [uploaded, ...prev]);
+                    setStatusMessage(
+                      `Uploaded "${file.name}" to Firebase Storage (${uploaded.storagePath}).`
+                    );
+                  } catch (err) {
+                    setErrorMessage(
+                      err instanceof Error
+                        ? `Firebase Storage upload error: ${err.message}`
+                        : 'Firebase Storage upload failed.'
+                    );
+                  } finally {
+                    setUploadingBookFile(false);
+                  }
+                }}
+                className="block w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-[#0A192F] file:text-white hover:file:bg-slate-800"
+              />
+              {uploadedBookUrl && (
+                <p className="text-[11px] font-mono-tabular text-emerald-700 truncate">
+                  Firebase Storage URL attached: {uploadedBookUrl}
+                </p>
+              )}
+            </div>
+
             <button
               type="submit"
-              className="w-full py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800"
+              disabled={uploadingBookFile}
+              className="w-full py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50"
             >
               Publish Book / Storybook
             </button>
@@ -901,6 +1062,186 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   </div>
                 ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3B: Firebase Storage Cloud Media Manager */}
+      {activeTab === 'storage' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <Cloud className="w-5 h-5 text-[#B48A1E]" />
+              <h2 className="font-display text-lg font-bold text-[#0A192F]">
+                Upload Media to Firebase Storage
+              </h2>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Upload course video recordings (MP4/WebM), digital textbooks (PDF/EPUB), or product
+              cover images directly to your provisioned Firebase Storage bucket.
+            </p>
+
+            <div>
+              <label htmlFor="storage-folder-select" className="block text-xs font-semibold mb-1">
+                Target Storage Folder
+              </label>
+              <select
+                id="storage-folder-select"
+                value={cloudFolder}
+                onChange={(e) =>
+                  setCloudFolder(
+                    e.target.value as
+                      | 'protected/courses'
+                      | 'protected/books'
+                      | 'public/covers'
+                      | 'public/previews'
+                  )
+                }
+                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
+              >
+                <option value="protected/courses">protected/courses (Course Videos)</option>
+                <option value="protected/books">protected/books (Digital PDF / EPUB Books)</option>
+                <option value="public/previews">public/previews (Public Trailer Videos)</option>
+                <option value="public/covers">public/covers (Product Cover Artwork)</option>
+              </select>
+            </div>
+
+            <div className="p-4 border-2 border-dashed border-slate-300 rounded-xl bg-slate-50/70 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                  <Upload className="w-4 h-4 text-[#B48A1E]" />
+                  <span>Select File to Upload</span>
+                </span>
+                {uploadingCloudAsset && (
+                  <span className="text-xs font-mono-tabular font-bold text-[#B48A1E]">
+                    {cloudUploadProgress}%
+                  </span>
+                )}
+              </div>
+              <input
+                type="file"
+                disabled={uploadingCloudAsset}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file || !user) return;
+                  setUploadingCloudAsset(true);
+                  setCloudUploadProgress(0);
+                  setErrorMessage(null);
+                  setStatusMessage(null);
+                  try {
+                    const uploaded = await uploadFileToFirebaseStorage({
+                      file,
+                      folder: cloudFolder,
+                      uploadedByUid: user.uid,
+                      isAdmin: true,
+                      onProgress: (pct) => setCloudUploadProgress(pct),
+                    });
+                    setStorageAssets((prev) => [uploaded, ...prev]);
+                    setStatusMessage(
+                      `Uploaded "${file.name}" to Firebase Storage at ${uploaded.storagePath}.`
+                    );
+                  } catch (err) {
+                    setErrorMessage(
+                      err instanceof Error
+                        ? `Firebase Storage upload failed: ${err.message}`
+                        : 'Firebase Storage upload failed.'
+                    );
+                  } finally {
+                    setUploadingCloudAsset(false);
+                  }
+                }}
+                className="block w-full text-xs text-slate-600 file:mr-3 file:py-2 file:px-3.5 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-[#0A192F] file:text-white hover:file:bg-slate-800"
+              />
+              {uploadingCloudAsset && (
+                <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-[#D4AF37] transition-all"
+                    style={{ width: `${cloudUploadProgress}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="font-display text-lg font-bold text-[#0A192F]">
+                Uploaded Firebase Storage Files ({storageAssets.length})
+              </h3>
+              <button
+                type="button"
+                onClick={fetchStorageAssets}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg"
+              >
+                Refresh Bucket List
+              </button>
+            </div>
+
+            {storageAssets.length === 0 ? (
+              <p className="text-xs text-slate-500 py-8 text-center">
+                No files uploaded to Firebase Storage yet. Use the upload panel on the left or in
+                the Courses / Books tabs to upload videos, PDFs, or covers.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg">
+                {storageAssets.map((asset) => (
+                  <div
+                    key={asset.id}
+                    className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <div className="space-y-1 min-w-0">
+                      <p className="font-bold text-[#0A192F] truncate">{asset.fileName}</p>
+                      <p className="font-mono-tabular text-[11px] text-slate-500 truncate">
+                        {asset.storagePath} · {(asset.sizeBytes / 1024).toFixed(1)} KB
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(asset.downloadUrl);
+                          setStatusMessage(`Copied Firebase Storage URL for "${asset.fileName}".`);
+                        }}
+                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded inline-flex items-center gap-1"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy URL</span>
+                      </button>
+                      <a
+                        href={asset.downloadUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 bg-[#D4AF37]/20 hover:bg-[#D4AF37]/30 text-[#0A192F] font-semibold rounded inline-flex items-center gap-1"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Open</span>
+                      </a>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await deleteObject(storageRef(storage, asset.storagePath));
+                          } catch {
+                            // Ignore if already removed in bucket
+                          }
+                          try {
+                            await deleteDoc(doc(db, 'storageAssets', asset.id));
+                          } catch {
+                            // Ignore
+                          }
+                          setStorageAssets((prev) => prev.filter((x) => x.id !== asset.id));
+                          setStatusMessage(`Removed "${asset.fileName}" from Firebase Storage.`);
+                        }}
+                        className="p-1.5 text-red-600 hover:bg-red-50 rounded"
+                        title="Delete from Firebase Storage"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

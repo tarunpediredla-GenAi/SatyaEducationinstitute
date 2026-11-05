@@ -9,7 +9,17 @@ import {
   User,
   LogOut,
   MailCheck,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
+import {
+  auth,
+  db,
+  doc,
+  setDoc,
+  sendEmailVerification,
+  updateProfile,
+} from '../firebase';
 import type { CatalogProduct, CourseLesson } from '../utils/commerceRules';
 import type { ActiveUserSession } from './AuthModal';
 import type { SavedAddressRecord } from './CartCheckoutView';
@@ -58,6 +68,7 @@ interface UserDashboardViewProps {
   progressByLessonId: Record<string, LessonProgressRecord>;
   initialCourseId?: string | null;
   onUpdateProfile: (name: string, phone: string) => void;
+  onRefreshSession?: () => Promise<void>;
   onToggleLessonCompleted: (courseId: string, lessonId: string, watchedSeconds: number) => void;
   onSaveAddress: (addr: Omit<SavedAddressRecord, 'id' | 'userId'>) => SavedAddressRecord;
   onDeleteAddress: (id: string) => void;
@@ -77,6 +88,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   progressByLessonId,
   initialCourseId,
   onUpdateProfile,
+  onRefreshSession,
   onToggleLessonCompleted,
   onSaveAddress,
   onDeleteAddress,
@@ -118,6 +130,8 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   const [profileName, setProfileName] = useState(user.name);
   const [profilePhone, setProfilePhone] = useState(user.phone);
   const [profileSavedToast, setProfileSavedToast] = useState(false);
+  const [verificationFeedback, setVerificationFeedback] = useState<string | null>(null);
+  const [sendingVerification, setSendingVerification] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
 
   const [addrName, setAddrName] = useState(user.name);
@@ -126,6 +140,46 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   const [addrCity, setAddrCity] = useState('');
   const [addrState, setAddrState] = useState('');
   const [addrPin, setAddrPin] = useState('');
+
+  const handleSendVerificationEmail = async () => {
+    if (!auth.currentUser) return;
+    setSendingVerification(true);
+    setVerificationFeedback(null);
+    try {
+      await sendEmailVerification(auth.currentUser);
+      setVerificationFeedback(
+        `Verification email sent to ${user.email}. Click the link in your inbox, then click "Refresh Status".`
+      );
+    } catch (err) {
+      setVerificationFeedback(
+        err instanceof Error ? err.message : 'Unable to send verification email right now.'
+      );
+    } finally {
+      setSendingVerification(false);
+    }
+  };
+
+  const handleRefreshVerificationStatus = async () => {
+    if (!auth.currentUser) return;
+    setSendingVerification(true);
+    setVerificationFeedback(null);
+    try {
+      await auth.currentUser.reload();
+      await auth.currentUser.getIdToken(true);
+      if (onRefreshSession) {
+        await onRefreshSession();
+      }
+      setVerificationFeedback(
+        auth.currentUser.emailVerified
+          ? 'Your email address is now verified!'
+          : 'Email is not verified yet. Please check your inbox and spam folder.'
+      );
+    } catch {
+      setVerificationFeedback('Could not refresh verification status.');
+    } finally {
+      setSendingVerification(false);
+    }
+  };
 
   const handleBookDownload = async (book: CatalogProduct) => {
     setDownloadStatus(`Preparing download for "${book.title}"...`);
@@ -160,7 +214,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header Bar */}
-      <div className="bg-[#0A192F] text-white rounded-xl p-6 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-[#0A192F] text-white rounded-xl p-6 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <img
             src="/logo.png"
@@ -172,10 +226,20 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
               STUDENT LEARNING DASHBOARD
             </p>
             <h1 className="font-display text-2xl font-bold mt-1">Welcome, {user.name}</h1>
-            <p className="text-xs text-slate-300 mt-1">
+            <p className="text-xs text-slate-300 mt-1 flex flex-wrap items-center gap-1.5">
               <span>{user.email}</span>
-              <span aria-hidden="true"> · </span>
+              <span aria-hidden="true">·</span>
               <span className="uppercase">{user.role}</span>
+              <span aria-hidden="true">·</span>
+              <span
+                className={
+                  user.emailVerified
+                    ? 'text-emerald-400 font-semibold'
+                    : 'text-amber-300 font-semibold'
+                }
+              >
+                {user.emailVerified ? 'Email Verified' : 'Email Unverified'}
+              </span>
             </p>
           </div>
         </div>
@@ -185,9 +249,44 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
           className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-2 self-start sm:self-auto"
         >
           <LogOut className="w-4 h-4 text-[#D4AF37]" />
-          <span>Sign Out</span>
+          <span>Log Out</span>
         </button>
       </div>
+
+      {/* Email Verification Notice Banner (if unverified) */}
+      {!user.emailVerified && (
+        <div className="mb-6 p-4 rounded-xl bg-amber-50 border border-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Verify your email address ({user.email})</p>
+              <p className="text-amber-800 mt-0.5">
+                {verificationFeedback ||
+                  'Please verify your email address to secure your student account and order receipts.'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={sendingVerification}
+              onClick={handleSendVerificationEmail}
+              className="px-3 py-1.5 bg-[#0A192F] text-white font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-60"
+            >
+              Send Verification Email
+            </button>
+            <button
+              type="button"
+              disabled={sendingVerification}
+              onClick={handleRefreshVerificationStatus}
+              className="px-3 py-1.5 bg-white border border-amber-300 text-amber-900 font-semibold rounded-lg hover:bg-amber-100 inline-flex items-center gap-1 disabled:opacity-60"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Refresh Status</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Navigation Tabs */}
       <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-lg mb-8 overflow-x-auto">
@@ -698,9 +797,34 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
           )}
 
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              onUpdateProfile(profileName.trim() || user.name, profilePhone.trim());
+              const cleanName = profileName.trim() || user.name;
+              const cleanPhone = profilePhone.trim();
+              if (auth.currentUser) {
+                try {
+                  await updateProfile(auth.currentUser, { displayName: cleanName });
+                } catch {
+                  // ignore
+                }
+                try {
+                  await setDoc(
+                    doc(db, 'users', user.uid),
+                    {
+                      uid: user.uid,
+                      name: cleanName.slice(0, 120),
+                      email: user.email.slice(0, 256),
+                      phone: cleanPhone.slice(0, 40),
+                      role: user.role,
+                      updatedAt: new Date().toISOString(),
+                    },
+                    { merge: true }
+                  );
+                } catch {
+                  // ignore
+                }
+              }
+              onUpdateProfile(cleanName, cleanPhone);
               setProfileSavedToast(true);
             }}
             className="space-y-4"
@@ -744,9 +868,27 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 text-xs text-emerald-700">
-              <MailCheck className="w-4 h-4" />
-              <span>Account Status: Active</span>
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs pt-1">
+              <div
+                className={`flex items-center gap-2 font-semibold ${
+                  user.emailVerified ? 'text-emerald-700' : 'text-amber-700'
+                }`}
+              >
+                <MailCheck className="w-4 h-4" />
+                <span>
+                  Email Verification: {user.emailVerified ? 'Verified' : 'Pending Verification'}
+                </span>
+              </div>
+              {!user.emailVerified && (
+                <button
+                  type="button"
+                  disabled={sendingVerification}
+                  onClick={handleSendVerificationEmail}
+                  className="text-[#0A192F] underline font-semibold"
+                >
+                  Resend Verification Link
+                </button>
+              )}
             </div>
 
             <button

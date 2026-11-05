@@ -37,6 +37,7 @@ import {
   type CatalogProduct,
   type CourseLesson,
 } from './utils/commerceRules';
+import { auth, onAuthStateChanged, signOut } from './firebase';
 import { getClientAuthHeaders } from './utils/apiAuth';
 import {
   INITIAL_BANNERS,
@@ -49,7 +50,11 @@ import {
   type PromotionalBanner,
 } from './data/sampleCatalog';
 import { CoverArtwork, formatCleanTitle } from './components/CoverArtwork';
-import { AuthModal, type ActiveUserSession } from './components/AuthModal';
+import {
+  AuthModal,
+  buildAndSyncFirebaseUserSession,
+  type ActiveUserSession,
+} from './components/AuthModal';
 import { ProductDetailView } from './components/ProductDetailView';
 import {
   CartCheckoutView,
@@ -83,6 +88,7 @@ export default function App() {
   const [heroSpotlightIndex, setHeroSpotlightIndex] = useState<number>(0);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'register' | 'reset'>('login');
 
   // Catalog state synchronized with backend /api/catalog
   const [products, setProducts] = useState<CatalogProduct[]>(INITIAL_PRODUCTS);
@@ -106,7 +112,7 @@ export default function App() {
     'featured'
   );
 
-  // User Session & Isolated Personal State
+  // User Session & Isolated Personal State (managed strictly via Firebase Authentication)
   const [user, setUser] = useState<ActiveUserSession | null>(null);
 
   const [cart, setCart] = useState<CartItemState[]>([
@@ -133,14 +139,16 @@ export default function App() {
     }, 3500);
   };
 
-  const handleSignOut = () => {
-    setUser(null);
+  const handleSignOut = async () => {
     try {
-      localStorage.removeItem('satya_user_session');
+      await signOut(auth);
     } catch {
       // ignore
     }
-    showToast('Signed out successfully.');
+    setUser(null);
+    setOrders([]);
+    setEntitlements([]);
+    showToast('Logged out successfully.');
     if (activeView === 'dashboard' || activeView === 'admin') {
       setActiveView('home');
     }
@@ -183,12 +191,7 @@ export default function App() {
     }
     try {
       const authHeaders = await getClientAuthHeaders(activeSession);
-      const queryParams = new URLSearchParams({
-        userId: activeSession.uid,
-        userEmail: activeSession.email,
-        userRole: activeSession.role,
-      });
-      const res = await fetch(`/api/user/library?${queryParams.toString()}`, {
+      const res = await fetch('/api/user/library', {
         headers: authHeaders,
       });
       if (res.ok) {
@@ -203,17 +206,17 @@ export default function App() {
 
   useEffect(() => {
     fetchCatalogFromServer();
-    try {
-      const saved = localStorage.getItem('satya_user_session');
-      if (saved) {
-        const parsed = JSON.parse(saved) as ActiveUserSession;
-        if (parsed && parsed.uid && parsed.email) {
-          setUser(parsed);
-        }
+
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        const synced = await buildAndSyncFirebaseUserSession(fbUser);
+        setUser(synced);
+      } else {
+        setUser(null);
       }
-    } catch {
-      // ignore
-    }
+    });
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -604,13 +607,13 @@ export default function App() {
             {/* HEADER AUTHENTICATION ONLY: Exclusively in Navigation Header */}
             <div className="flex items-center gap-1.5 sm:gap-2">
               {user ? (
-                /* Authenticated User: Profile Avatar + Direct Sign Out */
+                /* Authenticated User: Profile + Direct Log Out */
                 <div className="flex items-center gap-1.5 sm:gap-2">
                   <button
                     type="button"
                     onClick={() => setActiveView('dashboard')}
-                    className="inline-flex items-center gap-2 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 rounded-lg text-xs font-semibold text-[#0A192F] transition-colors max-w-[140px] sm:max-w-[180px] truncate"
-                    title={`Signed in as ${user.name} (${user.role}). Click to view Dashboard.`}
+                    className="inline-flex items-center gap-2 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200/80 border border-slate-200 rounded-lg text-xs font-semibold text-[#0A192F] transition-colors max-w-[160px] sm:max-w-[200px] truncate"
+                    title={`Profile: ${user.name} (${user.role}). Click to open Dashboard & Profile.`}
                   >
                     <span className="w-6 h-6 rounded-full bg-[#0A192F] text-[#D4AF37] flex items-center justify-center text-[11px] font-bold shrink-0">
                       {user.name.charAt(0).toUpperCase()}
@@ -624,7 +627,7 @@ export default function App() {
                       </span>
                     ) : (
                       <span className="px-1.5 py-0.5 text-[10px] font-medium bg-slate-200 text-slate-700 rounded hidden md:inline">
-                        Student
+                        Profile
                       </span>
                     )}
                   </button>
@@ -632,30 +635,36 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleSignOut}
-                    title="Sign Out"
+                    title="Log Out"
                     className="inline-flex items-center gap-1.5 px-2.5 py-2 text-xs font-semibold text-slate-700 hover:text-red-700 bg-white hover:bg-red-50 border border-slate-200 hover:border-red-200 rounded-lg transition-all whitespace-nowrap shadow-xs"
                   >
                     <LogOut className="w-3.5 h-3.5 text-slate-500 hover:text-red-600" />
-                    <span className="hidden sm:inline">Sign Out</span>
+                    <span className="hidden sm:inline">Log Out</span>
                   </button>
                 </div>
               ) : (
-                /* Logged Out User: Sign In & Register */
+                /* Logged Out User: Log In & Sign Up */
                 <div className="flex items-center gap-1.5 sm:gap-2">
                   <button
                     type="button"
-                    onClick={() => setAuthModalOpen(true)}
+                    onClick={() => {
+                      setAuthModalMode('login');
+                      setAuthModalOpen(true);
+                    }}
                     className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 hover:text-[#0A192F] hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap"
                   >
                     <LogIn className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Sign In</span>
+                    <span>Log In</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => setAuthModalOpen(true)}
+                    onClick={() => {
+                      setAuthModalMode('register');
+                      setAuthModalOpen(true);
+                    }}
                     className="inline-flex items-center gap-1 px-3 py-2 text-xs font-bold text-[#0A192F] bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] hover:brightness-105 active:scale-95 rounded-lg shadow-xs transition-all whitespace-nowrap"
                   >
-                    <span>Register</span>
+                    <span>Sign Up</span>
                   </button>
                 </div>
               )}
@@ -701,7 +710,7 @@ export default function App() {
                 { id: 'books', label: 'Educational Books' },
                 { id: 'storybooks', label: 'Storybooks' },
                 { id: 'catalog', label: 'Full Catalog & Filters' },
-                ...(user ? [{ id: 'dashboard' as const, label: 'My Dashboard' }] : []),
+                ...(user ? [{ id: 'dashboard' as const, label: 'My Dashboard & Profile' }] : []),
                 ...(user?.role === 'admin'
                   ? [{ id: 'admin' as const, label: 'Admin Studio' }]
                   : []),
@@ -711,6 +720,7 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       if (item.id === 'dashboard' && !user) {
+                        setAuthModalMode('login');
                         setAuthModalOpen(true);
                       } else {
                         setActiveView(item.id as ActiveView);
@@ -747,7 +757,7 @@ export default function App() {
                       }}
                       className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-lg text-center"
                     >
-                      My Dashboard
+                      Profile & Dashboard
                     </button>
                     <button
                       type="button"
@@ -758,7 +768,7 @@ export default function App() {
                       className="py-2 px-3 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold rounded-lg text-center flex items-center justify-center gap-1.5"
                     >
                       <LogOut className="w-3.5 h-3.5" />
-                      <span>Sign Out</span>
+                      <span>Log Out</span>
                     </button>
                   </div>
                 </div>
@@ -768,22 +778,24 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setMobileMenuOpen(false);
+                      setAuthModalMode('login');
                       setAuthModalOpen(true);
                     }}
                     className="py-2.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-lg text-center flex items-center justify-center gap-1.5"
                   >
                     <LogIn className="w-3.5 h-3.5" />
-                    <span>Sign In</span>
+                    <span>Log In</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => {
                       setMobileMenuOpen(false);
+                      setAuthModalMode('register');
                       setAuthModalOpen(true);
                     }}
                     className="py-2.5 px-3 bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] text-[#0A192F] text-xs font-bold rounded-lg text-center shadow-xs"
                   >
-                    <span>Register</span>
+                    <span>Sign Up</span>
                   </button>
                 </div>
               )}
@@ -1571,6 +1583,12 @@ export default function App() {
               onUpdateProfile={(name, phone) => {
                 setUser((prev) => (prev ? { ...prev, name, phone } : null));
               }}
+              onRefreshSession={async () => {
+                if (auth.currentUser) {
+                  const synced = await buildAndSyncFirebaseUserSession(auth.currentUser);
+                  setUser(synced);
+                }
+              }}
               onToggleLessonCompleted={(courseId, lessonId, watchedSeconds) => {
                 setProgressByLessonId((prev) => {
                   const current = prev[lessonId];
@@ -1606,7 +1624,7 @@ export default function App() {
           ) : (
             <div className="max-w-xl mx-auto px-4 py-16 text-center space-y-4">
               <h2 className="font-display text-2xl font-bold text-[#0A192F]">
-                Sign In to Access Your Student Dashboard
+                Log In to Access Your Student Dashboard
               </h2>
               <p className="text-sm text-slate-600">
                 Your purchased courses, lesson playback progress, digital books, and orders are
@@ -1614,10 +1632,13 @@ export default function App() {
               </p>
               <button
                 type="button"
-                onClick={() => setAuthModalOpen(true)}
+                onClick={() => {
+                  setAuthModalMode('login');
+                  setAuthModalOpen(true);
+                }}
                 className="px-6 py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg"
               >
-                Open Sign In Modal
+                Open Log In Modal
               </button>
             </div>
           ))}
@@ -1821,14 +1842,10 @@ export default function App() {
       {/* Authentication Modal */}
       <AuthModal
         isOpen={authModalOpen}
+        initialMode={authModalMode}
         onClose={() => setAuthModalOpen(false)}
         onSessionAuthenticated={(session) => {
           setUser(session);
-          try {
-            localStorage.setItem('satya_user_session', JSON.stringify(session));
-          } catch {
-            // ignore
-          }
           showToast(`Signed in as ${session.name} (${session.role})`);
         }}
       />

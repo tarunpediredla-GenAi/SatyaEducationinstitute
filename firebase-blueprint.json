@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated student or administrator profile.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "name": { "type": "string", "description": "Display name" },
+        "email": { "type": "string", "format": "email", "description": "Email address" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "role": { "type": "string", "enum": ["student", "admin"], "description": "Access role" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp" }
+      },
+      "required": ["uid", "name", "email", "role", "updatedAt"]
+    },
+    "StorageAsset": {
+      "title": "StorageAsset",
+      "description": "Metadata for files uploaded to Firebase Storage (course videos, PDFs, book covers).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Asset identifier" },
+        "fileName": { "type": "string", "description": "Original file name" },
+        "storagePath": { "type": "string", "description": "Firebase Storage full path" },
+        "downloadUrl": { "type": "string", "description": "Firebase Storage download URL" },
+        "contentType": { "type": "string", "description": "MIME type" },
+        "sizeBytes": { "type": "number", "description": "File size in bytes" },
+        "uploadedByUid": { "type": "string", "description": "Uploader UID" },
+        "createdAt": { "type": "string", "description": "ISO upload timestamp" }
+      },
+      "required": ["id", "fileName", "storagePath", "downloadUrl", "contentType", "sizeBytes", "uploadedByUid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile documents."
+    },
+    "/storageAssets/{assetId}": {
+      "schema": { "$ref": "#/entities/StorageAsset" },
+      "description": "Uploaded Firebase Storage media assets managed by administrators."
+    }
+  }
+}
