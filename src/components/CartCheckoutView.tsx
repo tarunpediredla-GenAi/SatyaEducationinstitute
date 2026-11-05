@@ -9,11 +9,27 @@ import {
   AlertCircle,
   CreditCard,
   ArrowRight,
+  RefreshCw,
 } from 'lucide-react';
 import type { CatalogProduct } from '../utils/commerceRules';
 import type { ActiveUserSession } from './AuthModal';
 import { CoverArtwork, formatCleanTitle } from './CoverArtwork';
-import { getClientAuthHeaders, getClientAuthPayload } from '../utils/apiAuth';
+import { getClientAuthHeaders } from '../utils/apiAuth';
+
+declare global {
+  interface Window {
+    Cashfree?: (config: { mode: 'sandbox' | 'production' }) => {
+      checkout: (options: {
+        paymentSessionId: string;
+        redirectTarget?: '_modal' | '_self';
+      }) => Promise<{
+        error?: { message?: string };
+        redirect?: boolean;
+        paymentDetails?: unknown;
+      }>;
+    };
+  }
+}
 
 export interface CartItemState {
   productId: string;
@@ -78,6 +94,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
 
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
 
   const [orderFeedback, setOrderFeedback] = useState<{
     orderId: string;
@@ -138,6 +155,42 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
     setShowNewAddressForm(false);
   };
 
+  const verifyPaymentWithBackend = async (orderIdToVerify: string) => {
+    setCheckoutLoading(true);
+    setCheckoutError(null);
+    try {
+      const authHeaders = await getClientAuthHeaders(user);
+      const verifyRes = await fetch('/api/payments/cashfree/verify', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ orderId: orderIdToVerify }),
+      });
+
+      const verifyData = await verifyRes.json();
+      if (!verifyRes.ok || !verifyData.verified) {
+        setCheckoutError(
+          verifyData?.error ||
+            `Order ${orderIdToVerify} is still pending payment verification with Cashfree. Content unlocks only after payment is confirmed as PAID.`
+        );
+        return;
+      }
+
+      setPendingOrderId(null);
+      onClearCart();
+      await onOrderCompleted();
+      setOrderFeedback({
+        orderId: verifyData.order.id,
+        message: `Cashfree payment verified for Order ${verifyData.order.id}! Your courses and digital books are now unlocked in your Student Dashboard.`,
+      });
+    } catch (err) {
+      setCheckoutError(
+        err instanceof Error ? err.message : 'Network error verifying payment with server.'
+      );
+    } finally {
+      setCheckoutLoading(false);
+    }
+  };
+
   const handlePlaceOrder = async () => {
     setCheckoutError(null);
     setOrderFeedback(null);
@@ -177,13 +230,12 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
     setCheckoutLoading(true);
     try {
       const authHeaders = await getClientAuthHeaders(user);
-      const authPayload = await getClientAuthPayload(user);
 
-      const response = await fetch('/api/orders/create', {
+      // Step 1: Create Pending Order and Request Cashfree Payment Session
+      const response = await fetch('/api/payments/cashfree/create-order', {
         method: 'POST',
         headers: authHeaders,
         body: JSON.stringify({
-          ...authPayload,
           cartItems: cart,
           couponCode: appliedCoupon,
           shippingAddress: resolvedAddress,
@@ -191,24 +243,54 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
           customerEmail: user.email,
           customerPhone: resolvedAddress?.phone || user.phone || '9876543210',
           paymentMethod,
+          returnUrl: window.location.origin,
         }),
       });
 
       const data = await response.json();
-      if (!response.ok) {
-        setCheckoutError(data?.error || 'Could not complete order.');
+      if (data?.order?.id) {
+        setPendingOrderId(data.order.id);
+      }
+
+      if (!response.ok || !data.paymentSessionId) {
+        await onOrderCompleted();
+        setCheckoutError(
+          data?.error || 'Could not initialize Cashfree checkout session.'
+        );
         return;
       }
 
-      onClearCart();
-      await onOrderCompleted();
-      setOrderFeedback({
-        orderId: data.order.id,
-        message: `Order ${data.order.id} confirmed! Your courses and digital books are now unlocked in your Student Dashboard.`,
+      // Step 2: Launch Official Cashfree v3 Modal Checkout
+      if (typeof window.Cashfree !== 'function') {
+        setCheckoutError(
+          'Cashfree Checkout SDK is not loaded. Please check your internet connection and refresh.'
+        );
+        return;
+      }
+
+      const cashfree = window.Cashfree({
+        mode: data.cashfreeMode === 'sandbox' ? 'sandbox' : 'production',
       });
+
+      const checkoutResult = await cashfree.checkout({
+        paymentSessionId: data.paymentSessionId,
+        redirectTarget: '_modal',
+      });
+
+      if (checkoutResult?.error) {
+        await onOrderCompleted();
+        setCheckoutError(
+          checkoutResult.error.message ||
+            `Payment was not completed for Order ${data.order.id}. Order status remains pending.`
+        );
+        return;
+      }
+
+      // Step 3: Independently Verify Payment Status on Backend with Cashfree Server API
+      await verifyPaymentWithBackend(data.order.id);
     } catch (err) {
       setCheckoutError(
-        err instanceof Error ? err.message : 'Network error completing order.'
+        err instanceof Error ? err.message : 'Network error during checkout.'
       );
     } finally {
       setCheckoutLoading(false);
@@ -219,7 +301,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <div className="mb-6">
         <p className="text-xs font-mono-tabular text-[#B48A1E]">
-          DIRECT INR CHECKOUT · INSTANT ACCESS
+          CASHFREE INR CHECKOUT · SERVER-VERIFIED FULFILLMENT
         </p>
         <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
           Shopping Cart & Checkout
@@ -234,7 +316,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
           <div className="flex items-start gap-3">
             <CheckCircle2 className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
             <div>
-              <h3 className="text-sm font-bold">Order Confirmed — Access Granted</h3>
+              <h3 className="text-sm font-bold">Cashfree Payment Verified — Access Granted</h3>
               <p className="text-xs mt-1 leading-relaxed">{orderFeedback.message}</p>
             </div>
           </div>
@@ -503,7 +585,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
             )}
           </div>
 
-          {/* Right 5 columns: Order Summary & Checkout Button */}
+          {/* Right 5 columns: Order Summary & Cashfree Checkout Button */}
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-5">
             <h2 className="font-display text-xl font-bold text-[#0A192F]">
               Order Summary (INR)
@@ -531,10 +613,10 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
               </button>
             </div>
 
-            {/* Payment Method Selector */}
+            {/* Preferred Payment Mode Indicator */}
             <div className="space-y-2 pt-2 border-t border-slate-200">
               <span className="block text-xs font-semibold text-slate-700">
-                Select Payment Method
+                Cashfree Payment Options (UPI, Cards, NetBanking)
               </span>
               <div className="grid grid-cols-3 gap-2">
                 {(
@@ -590,10 +672,23 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
             {checkoutError && (
               <div
                 role="alert"
-                className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 flex items-start gap-2"
+                className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800 space-y-2"
               >
-                <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                <span>{checkoutError}</span>
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <span>{checkoutError}</span>
+                </div>
+                {pendingOrderId && (
+                  <button
+                    type="button"
+                    disabled={checkoutLoading}
+                    onClick={() => verifyPaymentWithBackend(pendingOrderId)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-red-300 text-red-900 font-semibold rounded-md hover:bg-red-100"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Re-check Cashfree Payment Status ({pendingOrderId})</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -601,23 +696,24 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
               type="button"
               disabled={checkoutLoading}
               onClick={handlePlaceOrder}
-              className="w-full py-3 px-4 bg-[#0A192F] text-white text-sm font-semibold rounded-lg hover:bg-slate-800 transition-colors flex items-center justify-center gap-2"
+              className="w-full py-3 px-4 bg-[#0A192F] text-white text-sm font-semibold rounded-lg hover:bg-slate-800 transition-colors flex items-center justify-center gap-2 disabled:opacity-60"
             >
               <CreditCard className="w-4 h-4 text-[#D4AF37]" />
               <span>
                 {checkoutLoading
-                  ? 'Completing Order...'
+                  ? 'Processing with Cashfree...'
                   : user
-                  ? `Complete Order — ₹${totalAmountInr.toLocaleString('en-IN')}`
-                  : 'Sign In to Complete Order'}
+                  ? `Pay with Cashfree — ₹${totalAmountInr.toLocaleString('en-IN')}`
+                  : 'Log In to Complete Order'}
               </span>
             </button>
 
             <div className="flex items-start gap-2 text-[11px] text-slate-500 leading-relaxed">
               <ShieldCheck className="w-4 h-4 text-[#B48A1E] shrink-0 mt-0.5" />
               <span>
-                Instant Enrollment: Courses and digital PDF books unlock immediately in your
-                Student Dashboard upon order completion.
+                Verified Fulfillment: Every order starts as <strong>pending</strong> and unlocks
+                courses or digital books only after our backend independently verifies payment
+                completion with Cashfree.
               </span>
             </div>
           </div>

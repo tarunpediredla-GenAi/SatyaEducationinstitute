@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ArrowLeft,
   Play,
@@ -13,6 +13,7 @@ import {
 import type { CatalogProduct, CourseLesson } from '../utils/commerceRules';
 import type { CourseCurriculumDetails } from '../data/sampleCatalog';
 import { CoverArtwork, formatCleanTitle } from './CoverArtwork';
+import { getClientAuthHeaders } from '../utils/apiAuth';
 
 interface ProductDetailViewProps {
   product: CatalogProduct;
@@ -48,10 +49,66 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
     freePreviewLesson
   );
   const [lockedLessonNotice, setLockedLessonNotice] = useState<string | null>(null);
+  const [resolvedLessonPlaybackUrl, setResolvedLessonPlaybackUrl] = useState<string>('');
 
   const isCourse = product.type === 'course';
   const requiresPhysicalDelivery =
     product.format === 'physical_book' || product.format === 'hybrid_book';
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolveVideoUrl = async () => {
+      if (!isCourse || !activePreviewLesson) {
+        setResolvedLessonPlaybackUrl('');
+        return;
+      }
+
+      if (activePreviewLesson.isFreePreview) {
+        setResolvedLessonPlaybackUrl(
+          activePreviewLesson.videoStoragePath.startsWith('http')
+            ? activePreviewLesson.videoStoragePath
+            : product.previewVideoUrl ||
+                'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4'
+        );
+        return;
+      }
+
+      if (!isEntitled) {
+        setResolvedLessonPlaybackUrl('');
+        return;
+      }
+
+      try {
+        const authHeaders = await getClientAuthHeaders();
+        const res = await fetch('/api/content/signed-url', {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({
+            productId: product.id,
+            lessonId: activePreviewLesson.id,
+          }),
+        });
+        const data = await res.json();
+        if (!cancelled && res.ok && data.signedUrl) {
+          setResolvedLessonPlaybackUrl(data.signedUrl);
+        } else if (!cancelled) {
+          setResolvedLessonPlaybackUrl('');
+          setLockedLessonNotice(
+            data?.error || 'Server entitlement verification is required to play this recording.'
+          );
+        }
+      } catch {
+        if (!cancelled) {
+          setResolvedLessonPlaybackUrl('');
+        }
+      }
+    };
+
+    resolveVideoUrl();
+    return () => {
+      cancelled = true;
+    };
+  }, [isCourse, activePreviewLesson?.id, activePreviewLesson?.isFreePreview, isEntitled, product.id, product.previewVideoUrl]);
 
   const formatLabel =
     product.format === 'recorded_course'
@@ -91,20 +148,21 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                   </span>
                 </div>
                 <div className="aspect-video bg-slate-950 relative">
-                  <video
-                    key={activePreviewLesson.id}
-                    controls
-                    preload="metadata"
-                    className="w-full h-full object-contain"
-                    src={
-                      activePreviewLesson.videoStoragePath.startsWith('http')
-                        ? activePreviewLesson.videoStoragePath
-                        : product.previewVideoUrl ||
-                          'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4'
-                    }
-                  >
-                    Your browser does not support HTML5 video playback.
-                  </video>
+                  {resolvedLessonPlaybackUrl ? (
+                    <video
+                      key={`${activePreviewLesson.id}-${resolvedLessonPlaybackUrl}`}
+                      controls
+                      preload="metadata"
+                      className="w-full h-full object-contain"
+                      src={resolvedLessonPlaybackUrl}
+                    >
+                      Your browser does not support HTML5 video playback.
+                    </video>
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-xs text-slate-400 p-6 text-center">
+                      Select a free preview lesson or purchase this course to unlock protected module recordings.
+                    </div>
+                  )}
                 </div>
                 <div className="p-4 bg-slate-50 border-t border-slate-200 text-xs text-slate-600">
                   <strong className="text-slate-900">Lesson Notes:</strong>{' '}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Play,
   CheckCircle2,
@@ -127,6 +127,9 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   const currentLesson =
     activeCourseLessons.find((l) => l.id === selectedLessonId) || activeCourseLessons[0];
 
+  const [signedLessonVideoUrl, setSignedLessonVideoUrl] = useState<string>('');
+  const [videoAccessError, setVideoAccessError] = useState<string | null>(null);
+
   const [profileName, setProfileName] = useState(user.name);
   const [profilePhone, setProfilePhone] = useState(user.phone);
   const [profileSavedToast, setProfileSavedToast] = useState(false);
@@ -140,6 +143,47 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   const [addrCity, setAddrCity] = useState('');
   const [addrState, setAddrState] = useState('');
   const [addrPin, setAddrPin] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchAuthorizedLessonStream = async () => {
+      if (!activeCourse || !currentLesson) {
+        setSignedLessonVideoUrl('');
+        return;
+      }
+      setVideoAccessError(null);
+      try {
+        const authHeaders = await getClientAuthHeaders(user);
+        const res = await fetch('/api/content/signed-url', {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({
+            productId: activeCourse.id,
+            lessonId: currentLesson.id,
+          }),
+        });
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok || !data.signedUrl) {
+          setSignedLessonVideoUrl('');
+          setVideoAccessError(
+            data?.error || 'Server entitlement verification required to play this lesson.'
+          );
+          return;
+        }
+        setSignedLessonVideoUrl(data.signedUrl);
+      } catch {
+        if (!cancelled) {
+          setSignedLessonVideoUrl('');
+          setVideoAccessError('Unable to verify course entitlement with server.');
+        }
+      }
+    };
+    fetchAuthorizedLessonStream();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCourse?.id, currentLesson?.id, user.uid]);
 
   const handleSendVerificationEmail = async () => {
     if (!auth.currentUser) return;
@@ -422,20 +466,21 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                       </button>
                     </div>
 
-                    <div className="aspect-video bg-slate-950">
-                      <video
-                        key={currentLesson.id}
-                        controls
-                        className="w-full h-full object-contain"
-                        src={
-                          currentLesson.videoStoragePath.startsWith('http')
-                            ? currentLesson.videoStoragePath
-                            : activeCourse.previewVideoUrl ||
-                              'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4'
-                        }
-                      >
-                        Your browser does not support HTML5 video playback.
-                      </video>
+                    <div className="aspect-video bg-slate-950 flex items-center justify-center">
+                      {signedLessonVideoUrl ? (
+                        <video
+                          key={`${currentLesson.id}-${signedLessonVideoUrl}`}
+                          controls
+                          className="w-full h-full object-contain"
+                          src={signedLessonVideoUrl}
+                        >
+                          Your browser does not support HTML5 video playback.
+                        </video>
+                      ) : (
+                        <div className="p-6 text-center text-xs text-slate-300 max-w-md">
+                          {videoAccessError || 'Verifying course entitlement and preparing stream...'}
+                        </div>
+                      )}
                     </div>
 
                     <div className="p-5 space-y-2">

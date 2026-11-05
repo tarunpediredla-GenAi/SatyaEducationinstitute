@@ -140,6 +140,7 @@ export function uploadFileToFirebaseStorage(params: {
     ? `${folder}/${subPath}/${timestamp}_${safeName}`
     : `${folder}/${timestamp}_${safeName}`;
 
+  const isProtectedFolder = folder.startsWith('protected/');
   const fileRef = storageRef(storage, fullStoragePath);
   const uploadTask = uploadBytesResumable(fileRef, file, {
     contentType: file.type || 'application/octet-stream',
@@ -161,13 +162,19 @@ export function uploadFileToFirebaseStorage(params: {
       },
       async () => {
         try {
-          const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+          // Security Fix #6: Never mint public capability download tokens (?token=...) for
+          // protected course recordings or digital books; store the canonical storagePath
+          // so playback/downloads are always gated by server-side entitlement verification.
+          const resolvedUrlOrPath = isProtectedFolder
+            ? fullStoragePath
+            : await getDownloadURL(uploadTask.snapshot.ref);
+
           const assetId = `asset_${timestamp}`;
           const assetRecord: UploadedStorageAsset = {
             id: assetId,
             fileName: file.name.slice(0, 250),
             storagePath: fullStoragePath.slice(0, 500),
-            downloadUrl: downloadUrl.slice(0, 2000),
+            downloadUrl: resolvedUrlOrPath.slice(0, 2000),
             contentType: (file.type || 'application/octet-stream').slice(0, 120),
             sizeBytes: file.size,
             uploadedByUid,

@@ -760,13 +760,15 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                     try {
                       const uploaded = await uploadFileToFirebaseStorage({
                         file,
-                        folder: 'protected/courses',
+                        folder: lessonIsPreview ? 'public/previews' : 'protected/courses',
                         subPath: lessonCourseId,
                         uploadedByUid: user.uid,
                         isAdmin: true,
                         onProgress: (pct) => setLessonUploadProgress(pct),
                       });
-                      setLessonVideoPath(uploaded.downloadUrl);
+                      setLessonVideoPath(
+                        lessonIsPreview ? uploaded.downloadUrl : uploaded.storagePath
+                      );
                       setStorageAssets((prev) => [uploaded, ...prev]);
                       setStatusMessage(
                         `Uploaded "${file.name}" to Firebase Storage (${uploaded.storagePath}).`

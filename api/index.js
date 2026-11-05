@@ -3,6 +3,20 @@ import express from "express";
 import crypto2 from "node:crypto";
 import dotenv from "dotenv";
 
+// firebase-applet-config.json
+var firebase_applet_config_default = {
+  projectId: "famous-campaign-mcbh2",
+  appId: "1:17973653490:web:76ea4ac9bc95881257456b",
+  apiKey: "AIzaSyBgiQ3wnlPh8QhRIZz8cd607IvJR21dpUI",
+  authDomain: "famous-campaign-mcbh2.firebaseapp.com",
+  firestoreDatabaseId: "ai-studio-satyaeducationin-9b640ea0-71d3-4e65-a837-86c8f3f0974b",
+  storageBucket: "famous-campaign-mcbh2.firebasestorage.app",
+  messagingSenderId: "17973653490",
+  measurementId: "",
+  oAuthClientId: "17973653490-25m617s3c1381pv0qm2j6iss08ird464.apps.googleusercontent.com",
+  recaptchaSiteKey: ""
+};
+
 // src/utils/commerceRules.ts
 var BOOTSTRAPPED_ADMIN_EMAIL = "tarunpediredla9966@gmail.com";
 var ID_REGEX = /^[a-zA-Z0-9_-]+$/;
@@ -11,13 +25,13 @@ function isValidDocumentId(id) {
 }
 function canUserPerformAdminOperation(auth) {
   if (!auth || !auth.uid) return false;
-  if (auth.customClaims?.admin === true && auth.emailVerified === true) {
+  if (auth.customClaims?.admin === true) {
     return true;
   }
-  if (auth.emailVerified === true && auth.email === BOOTSTRAPPED_ADMIN_EMAIL) {
+  if (auth.email && auth.emailVerified === true && auth.email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase()) {
     return true;
   }
-  if (auth.emailVerified === true && auth.isAdminRecordPresent === true) {
+  if (auth.isAdminRecordPresent === true) {
     return true;
   }
   return false;
@@ -58,9 +72,7 @@ function calculateVerifiedCartSummary(params) {
     }
     return params.catalogById[id];
   };
-  const verifiedItems = [];
-  let subtotalInr = 0;
-  let hasPhysicalItems = false;
+  const mergedQuantitiesByProductId = /* @__PURE__ */ new Map();
   for (const rawItem of cartItems) {
     if (!rawItem || !isValidDocumentId(rawItem.productId)) {
       return {
@@ -87,11 +99,42 @@ function calculateVerifiedCartSummary(params) {
         hasPhysicalItems: false
       };
     }
-    const product = getProduct(rawItem.productId);
+    const combinedQty = (mergedQuantitiesByProductId.get(rawItem.productId) || 0) + quantity;
+    if (combinedQty > 20) {
+      return {
+        valid: false,
+        error: "Invalid item quantity. Total quantity per product cannot exceed 20.",
+        items: [],
+        subtotalInr: 0,
+        discountInr: 0,
+        shippingInr: 0,
+        totalAmountInr: 0,
+        hasPhysicalItems: false
+      };
+    }
+    mergedQuantitiesByProductId.set(rawItem.productId, combinedQty);
+  }
+  const verifiedItems = [];
+  let subtotalInr = 0;
+  let hasPhysicalItems = false;
+  for (const [productId, quantity] of mergedQuantitiesByProductId.entries()) {
+    const product = getProduct(productId);
     if (!product || product.status !== "published") {
       return {
         valid: false,
-        error: `Product "${rawItem.productId}" is unavailable or unpublished.`,
+        error: `Product "${productId}" is unavailable or unpublished.`,
+        items: [],
+        subtotalInr: 0,
+        discountInr: 0,
+        shippingInr: 0,
+        totalAmountInr: 0,
+        hasPhysicalItems: false
+      };
+    }
+    if (typeof product.priceInr !== "number" || !Number.isFinite(product.priceInr) || product.priceInr <= 0) {
+      return {
+        valid: false,
+        error: `Product "${product.title}" has an invalid catalog price.`,
         items: [],
         subtotalInr: 0,
         discountInr: 0,
@@ -154,6 +197,18 @@ function calculateVerifiedCartSummary(params) {
   const discountedSubtotal = Math.max(0, subtotalInr - discountInr);
   const shippingInr = hasPhysicalItems ? discountedSubtotal >= 999 ? 0 : 79 : 0;
   const totalAmountInr = discountedSubtotal + shippingInr;
+  if (totalAmountInr <= 0) {
+    return {
+      valid: false,
+      error: "Calculated order total must be greater than \u20B90.",
+      items: verifiedItems,
+      subtotalInr,
+      discountInr,
+      shippingInr,
+      totalAmountInr: 0,
+      hasPhysicalItems
+    };
+  }
   return {
     valid: true,
     items: verifiedItems,
@@ -164,102 +219,590 @@ function calculateVerifiedCartSummary(params) {
     hasPhysicalItems
   };
 }
-function evaluateOrderWebhookTransition(params) {
-  const { order, cashfreePaymentStatus, paidAmountInr, cashfreePaymentId } = params;
-  if (order.paymentStatus === "paid") {
-    return {
-      shouldUpdateOrder: false,
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: true,
-      nextPaymentStatus: "paid",
-      nextShipmentStatus: order.shipmentStatus,
-      reason: "Order is already marked paid; duplicate webhook safely ignored."
-    };
-  }
-  if (order.paymentStatus === "refunded") {
-    return {
-      shouldUpdateOrder: false,
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: true,
-      nextPaymentStatus: "refunded",
-      nextShipmentStatus: order.shipmentStatus,
-      reason: "Order is already refunded; terminal state locked."
-    };
-  }
-  if (cashfreePaymentStatus === "SUCCESS") {
-    if (Math.round(paidAmountInr) !== order.totalAmountInr) {
-      return {
-        shouldUpdateOrder: true,
-        shouldGrantEntitlements: false,
-        shouldDecrementStock: false,
-        alreadyProcessed: false,
-        nextPaymentStatus: "failed",
-        nextShipmentStatus: order.shipmentStatus,
-        reason: `Amount mismatch: expected \u20B9${order.totalAmountInr}, received \u20B9${paidAmountInr}.`
-      };
-    }
-    return {
-      shouldUpdateOrder: true,
-      shouldGrantEntitlements: true,
-      shouldDecrementStock: order.hasPhysicalItems,
-      alreadyProcessed: false,
-      nextPaymentStatus: "paid",
-      nextShipmentStatus: order.hasPhysicalItems ? "processing" : "not_applicable",
-      reason: `Payment ${cashfreePaymentId} verified. Granting entitlements.`
-    };
-  }
-  if (cashfreePaymentStatus === "FAILED") {
-    return {
-      shouldUpdateOrder: order.paymentStatus !== "failed",
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: order.paymentStatus === "failed",
-      nextPaymentStatus: "failed",
-      nextShipmentStatus: order.shipmentStatus,
-      reason: "Payment reported as FAILED by Cashfree."
-    };
-  }
-  if (cashfreePaymentStatus === "USER_DROPPED" || cashfreePaymentStatus === "CANCELLED") {
-    return {
-      shouldUpdateOrder: order.paymentStatus !== "cancelled",
-      shouldGrantEntitlements: false,
-      shouldDecrementStock: false,
-      alreadyProcessed: order.paymentStatus === "cancelled",
-      nextPaymentStatus: "cancelled",
-      nextShipmentStatus: order.shipmentStatus,
-      reason: "Payment cancelled or dropped by user."
-    };
+
+// src/utils/firestoreServerStore.ts
+import crypto from "node:crypto";
+var PROJECT_ID = (process.env.FIREBASE_PROJECT_ID || "").trim() || firebase_applet_config_default.projectId;
+var DATABASE_ID = firebase_applet_config_default.firestoreDatabaseId || "(default)";
+var FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+  PROJECT_ID
+)}/databases/${encodeURIComponent(DATABASE_ID)}/documents`;
+var FIRESTORE_DOC_PREFIX = `projects/${PROJECT_ID}/databases/${DATABASE_ID}/documents`;
+var cachedServiceAccountToken = null;
+function getServiceAccountCredentials() {
+  const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || "").trim();
+  const rawPrivateKey = (process.env.FIREBASE_PRIVATE_KEY || "").trim();
+  if (!clientEmail || !rawPrivateKey) {
+    return null;
   }
   return {
-    shouldUpdateOrder: false,
-    shouldGrantEntitlements: false,
-    shouldDecrementStock: false,
-    alreadyProcessed: false,
-    nextPaymentStatus: "pending",
-    nextShipmentStatus: order.shipmentStatus,
-    reason: "Payment remains pending."
+    clientEmail,
+    privateKey: rawPrivateKey.replace(/\\n/g, "\n")
   };
 }
-
-// src/utils/serverCrypto.ts
-import crypto from "node:crypto";
-function computeCashfreeWebhookSignature(timestamp, rawBody, secretKey) {
-  return crypto.createHmac("sha256", secretKey).update(`${timestamp}${rawBody}`).digest("base64");
+async function getServiceAccountAccessToken() {
+  const creds = getServiceAccountCredentials();
+  if (!creds) {
+    return null;
+  }
+  if (cachedServiceAccountToken && cachedServiceAccountToken.expiresAtMs > Date.now()) {
+    return cachedServiceAccountToken.accessToken;
+  }
+  try {
+    const nowSec = Math.floor(Date.now() / 1e3);
+    const header = Buffer.from(
+      JSON.stringify({ alg: "RS256", typ: "JWT" })
+    ).toString("base64url");
+    const payload = Buffer.from(
+      JSON.stringify({
+        iss: creds.clientEmail,
+        sub: creds.clientEmail,
+        aud: "https://oauth2.googleapis.com/token",
+        iat: nowSec,
+        exp: nowSec + 3600,
+        scope: "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/devstorage.full_control"
+      })
+    ).toString("base64url");
+    const signer = crypto.createSign("RSA-SHA256");
+    signer.update(`${header}.${payload}`);
+    signer.end();
+    const signature = signer.sign(creds.privateKey, "base64url");
+    const assertion = `${header}.${payload}.${signature}`;
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion
+      }).toString()
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const data = await res.json();
+    if (!data.access_token) {
+      return null;
+    }
+    cachedServiceAccountToken = {
+      accessToken: data.access_token,
+      expiresAtMs: Date.now() + Math.max(60, (data.expires_in || 3600) - 300) * 1e3
+    };
+    return data.access_token;
+  } catch {
+    return null;
+  }
 }
-function verifyCashfreeWebhookSignature(params) {
-  const { timestampHeader, signatureHeader, rawBody, secretKey } = params;
-  if (!timestampHeader || !signatureHeader || !rawBody || !secretKey) {
-    return false;
+async function requireServiceAccountToken(operationName) {
+  const saToken = await getServiceAccountAccessToken();
+  if (!saToken) {
+    throw new Error(
+      `Privileged Firestore operation "${operationName}" failed securely: Server-side Firebase Service Account credentials (FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY) are not configured.`
+    );
   }
-  const expected = computeCashfreeWebhookSignature(timestampHeader, rawBody, secretKey);
-  const expectedBuf = Buffer.from(expected, "utf8");
-  const actualBuf = Buffer.from(signatureHeader, "utf8");
-  if (expectedBuf.length !== actualBuf.length) {
-    return false;
+  return saToken;
+}
+async function resolveCustomerScopedReadToken(verifiedCustomerIdToken) {
+  const saToken = await getServiceAccountAccessToken();
+  if (saToken) {
+    return saToken;
   }
-  return crypto.timingSafeEqual(expectedBuf, actualBuf);
+  if (verifiedCustomerIdToken && verifiedCustomerIdToken.trim()) {
+    return verifiedCustomerIdToken.trim();
+  }
+  return null;
+}
+function createGcsV4SignedReadUrl(params) {
+  const creds = getServiceAccountCredentials();
+  if (!creds) {
+    return null;
+  }
+  const { bucketName, objectPath, expiresInSeconds = 900 } = params;
+  const now = /* @__PURE__ */ new Date();
+  const isoBasic = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const datestamp = isoBasic.slice(0, 8);
+  const credentialScope = `${datestamp}/auto/storage/goog4_request`;
+  const credential = `${creds.clientEmail}/${credentialScope}`;
+  const encodedObjectPath = objectPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  const canonicalUri = `/${encodeURIComponent(bucketName)}/${encodedObjectPath}`;
+  const queryParams = {
+    "X-Goog-Algorithm": "GOOG4-RSA-SHA256",
+    "X-Goog-Credential": credential,
+    "X-Goog-Date": isoBasic,
+    "X-Goog-Expires": String(Math.min(Math.max(60, expiresInSeconds), 3600)),
+    "X-Goog-SignedHeaders": "host"
+  };
+  const canonicalQueryString = Object.keys(queryParams).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(queryParams[k])}`).join("&");
+  const canonicalHeaders = "host:storage.googleapis.com\n";
+  const signedHeaders = "host";
+  const payloadHash = "UNSIGNED-PAYLOAD";
+  const canonicalRequest = [
+    "GET",
+    canonicalUri,
+    canonicalQueryString,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join("\n");
+  const canonicalRequestHash = crypto.createHash("sha256").update(canonicalRequest, "utf8").digest("hex");
+  const stringToSign = [
+    "GOOG4-RSA-SHA256",
+    isoBasic,
+    credentialScope,
+    canonicalRequestHash
+  ].join("\n");
+  const signer = crypto.createSign("RSA-SHA256");
+  signer.update(stringToSign, "utf8");
+  signer.end();
+  const signatureHex = signer.sign(creds.privateKey, "hex");
+  return `https://storage.googleapis.com${canonicalUri}?${canonicalQueryString}&X-Goog-Signature=${signatureHex}`;
+}
+async function revokeProtectedStorageDownloadTokens(bucketName) {
+  const saToken = await requireServiceAccountToken("revokeProtectedStorageDownloadTokens");
+  const listUrl = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(
+    bucketName
+  )}/o?prefix=${encodeURIComponent("protected/")}&maxResults=500`;
+  const listRes = await fetch(listUrl, {
+    headers: { Authorization: `Bearer ${saToken}` }
+  });
+  if (!listRes.ok) {
+    throw new Error(`Failed to list protected objects in bucket (${listRes.status}).`);
+  }
+  const data = await listRes.json();
+  const items = Array.isArray(data.items) ? data.items : [];
+  let revokedCount = 0;
+  for (const item of items) {
+    const objectName = item.name;
+    if (!objectName) continue;
+    if (item.metadata && item.metadata.firebaseStorageDownloadTokens) {
+      const nextMetadata = { ...item.metadata };
+      delete nextMetadata.firebaseStorageDownloadTokens;
+      const patchUrl = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(
+        bucketName
+      )}/o/${encodeURIComponent(objectName)}`;
+      const patchRes = await fetch(patchUrl, {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${saToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          metadata: {
+            ...nextMetadata,
+            firebaseStorageDownloadTokens: null
+          }
+        })
+      });
+      if (patchRes.ok) {
+        revokedCount += 1;
+      }
+    }
+  }
+  return { scannedCount: items.length, revokedCount };
+}
+function toFirestoreValue(val) {
+  if (val === null || val === void 0) {
+    return { nullValue: null };
+  }
+  if (typeof val === "boolean") {
+    return { booleanValue: val };
+  }
+  if (typeof val === "number") {
+    if (Number.isInteger(val)) {
+      return { integerValue: String(val) };
+    }
+    return { doubleValue: val };
+  }
+  if (typeof val === "string") {
+    return { stringValue: val };
+  }
+  if (Array.isArray(val)) {
+    return {
+      arrayValue: {
+        values: val.map((item) => toFirestoreValue(item))
+      }
+    };
+  }
+  if (typeof val === "object") {
+    const fields = {};
+    for (const [k, v] of Object.entries(val)) {
+      if (v !== void 0) {
+        fields[k] = toFirestoreValue(v);
+      }
+    }
+    return { mapValue: { fields } };
+  }
+  return { stringValue: String(val) };
+}
+function toFirestoreFields(obj) {
+  const fields = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== void 0) {
+      fields[k] = toFirestoreValue(v);
+    }
+  }
+  return fields;
+}
+function fromFirestoreValue(val) {
+  if (!val) return void 0;
+  if ("stringValue" in val) return val.stringValue;
+  if ("booleanValue" in val) return val.booleanValue;
+  if ("integerValue" in val) return Number(val.integerValue);
+  if ("doubleValue" in val) return Number(val.doubleValue);
+  if ("nullValue" in val) return null;
+  if ("arrayValue" in val) {
+    return (val.arrayValue.values || []).map((v) => fromFirestoreValue(v));
+  }
+  if ("mapValue" in val) {
+    const out = {};
+    for (const [k, v] of Object.entries(val.mapValue.fields || {})) {
+      out[k] = fromFirestoreValue(v);
+    }
+    return out;
+  }
+  return void 0;
+}
+function parseOrderFromDoc(doc) {
+  if (!doc || !doc.fields) return null;
+  const f = doc.fields;
+  const id = String(fromFirestoreValue(f.id) || "").trim();
+  const userId = String(fromFirestoreValue(f.userId) || "").trim();
+  if (!id || !userId) return null;
+  const rawItems = fromFirestoreValue(f.lineItems);
+  const lineItems = Array.isArray(rawItems) ? rawItems.map((item) => {
+    const rec = item || {};
+    return {
+      productId: String(rec.productId || ""),
+      title: String(rec.title || ""),
+      type: rec.type === "book" || rec.type === "storybook" ? rec.type : "course",
+      format: String(rec.format || "recorded_course"),
+      quantity: Number(rec.quantity || 1),
+      unitPriceInr: Number(rec.unitPriceInr || 0)
+    };
+  }) : [];
+  return {
+    id,
+    userId,
+    customerName: String(fromFirestoreValue(f.customerName) || "Student"),
+    customerEmail: String(fromFirestoreValue(f.customerEmail) || ""),
+    totalAmountInr: Number(fromFirestoreValue(f.totalAmountInr) || 0),
+    paymentStatus: fromFirestoreValue(f.paymentStatus) || "pending",
+    shipmentStatus: fromFirestoreValue(f.shipmentStatus) || "not_applicable",
+    paymentReference: String(fromFirestoreValue(f.paymentReference) || ""),
+    hasPhysicalItems: Boolean(fromFirestoreValue(f.hasPhysicalItems)),
+    shippingAddressSummary: String(fromFirestoreValue(f.shippingAddressSummary) || ""),
+    itemSummary: String(fromFirestoreValue(f.itemSummary) || ""),
+    lineItems,
+    entitlementsGranted: Boolean(fromFirestoreValue(f.entitlementsGranted)),
+    createdAt: String(fromFirestoreValue(f.createdAt) || (/* @__PURE__ */ new Date()).toISOString()),
+    updatedAt: String(fromFirestoreValue(f.updatedAt) || (/* @__PURE__ */ new Date()).toISOString())
+  };
+}
+function parseEntitlementFromDoc(doc) {
+  if (!doc || !doc.fields) return null;
+  const f = doc.fields;
+  const id = String(fromFirestoreValue(f.id) || "").trim();
+  const userId = String(fromFirestoreValue(f.userId) || "").trim();
+  const productId = String(fromFirestoreValue(f.productId) || "").trim();
+  if (!id || !userId || !productId) return null;
+  return {
+    id,
+    userId,
+    productId,
+    productType: fromFirestoreValue(f.productType) || "course",
+    orderId: String(fromFirestoreValue(f.orderId) || ""),
+    downloadPath: String(fromFirestoreValue(f.downloadPath) || ""),
+    grantedAt: String(fromFirestoreValue(f.grantedAt) || (/* @__PURE__ */ new Date()).toISOString())
+  };
+}
+async function createPendingOrderInFirestore(order) {
+  const saToken = await requireServiceAccountToken("createPendingOrderInFirestore");
+  const pendingOrder = {
+    ...order,
+    paymentStatus: "pending",
+    paymentReference: "",
+    entitlementsGranted: false
+  };
+  const res = await fetch(
+    `${FIRESTORE_BASE_URL}/orders?documentId=${encodeURIComponent(pendingOrder.id)}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${saToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        fields: toFirestoreFields(pendingOrder)
+      })
+    }
+  );
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(
+      `Failed to persist pending order in Firestore (${res.status}): ${errText.slice(0, 240)}`
+    );
+  }
+  const createdDoc = await res.json();
+  return parseOrderFromDoc(createdDoc) || pendingOrder;
+}
+async function getOrderFromFirestore(orderId) {
+  const saToken = await requireServiceAccountToken("getOrderFromFirestore");
+  const res = await fetch(`${FIRESTORE_BASE_URL}/orders/${encodeURIComponent(orderId)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${saToken}`
+    }
+  });
+  if (res.status === 404 || !res.ok) {
+    return null;
+  }
+  const doc = await res.json();
+  const order = parseOrderFromDoc(doc);
+  if (!order) return null;
+  return {
+    order,
+    updateTime: doc.updateTime
+  };
+}
+async function fulfillPaidOrderAtomicallyInFirestore(params) {
+  const { orderId, paymentReference, onDecrementPhysicalStock } = params;
+  const saToken = await requireServiceAccountToken("fulfillPaidOrderAtomicallyInFirestore");
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = await getOrderFromFirestore(orderId);
+    if (!existing) {
+      throw new Error(`Order ${orderId} not found in Firestore.`);
+    }
+    const { order, updateTime } = existing;
+    if (order.paymentStatus === "paid" && order.entitlementsGranted) {
+      const existingEntitlements = await listEntitlementsByOrderFromFirestore(
+        order.userId,
+        order.id,
+        saToken
+      );
+      return {
+        order,
+        entitlements: existingEntitlements,
+        alreadyFulfilled: true
+      };
+    }
+    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    const updatedOrder = {
+      ...order,
+      paymentStatus: "paid",
+      paymentReference: paymentReference || order.paymentReference || `CF_${order.id}`,
+      entitlementsGranted: true,
+      updatedAt: nowIso
+    };
+    const entitlementsToGrant = [];
+    for (const item of order.lineItems) {
+      if (item.format === "recorded_course" || item.format === "digital_book" || item.format === "hybrid_book") {
+        const entitlementId = `${order.userId}_${item.productId}`;
+        entitlementsToGrant.push({
+          id: entitlementId,
+          userId: order.userId,
+          productId: item.productId,
+          productType: item.type,
+          orderId: order.id,
+          downloadPath: item.type === "course" ? `protected/courses/${item.productId}` : `protected/books/${item.productId}/${item.productId}.pdf`,
+          grantedAt: nowIso
+        });
+      }
+    }
+    const writes = [
+      // 1. Order document transition to 'paid' with optimistic concurrency lock on updateTime
+      {
+        update: {
+          name: `${FIRESTORE_DOC_PREFIX}/orders/${order.id}`,
+          fields: toFirestoreFields(updatedOrder)
+        },
+        ...updateTime ? { currentDocument: { updateTime } } : {}
+      },
+      // 2. Deterministic entitlement documents ({userId}_{productId})
+      ...entitlementsToGrant.map((ent) => ({
+        update: {
+          name: `${FIRESTORE_DOC_PREFIX}/entitlements/${ent.id}`,
+          fields: toFirestoreFields(ent)
+        }
+      }))
+    ];
+    const commitRes = await fetch(`${FIRESTORE_BASE_URL}:commit`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${saToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ writes })
+    });
+    if (commitRes.ok) {
+      if (onDecrementPhysicalStock) {
+        for (const item of order.lineItems) {
+          if (item.format === "physical_book" || item.format === "hybrid_book") {
+            onDecrementPhysicalStock(item.productId, item.quantity);
+          }
+        }
+      }
+      return {
+        order: updatedOrder,
+        entitlements: entitlementsToGrant,
+        alreadyFulfilled: false
+      };
+    }
+    if (commitRes.status === 400 || commitRes.status === 409) {
+      continue;
+    }
+    const errText = await commitRes.text();
+    throw new Error(
+      `Failed to commit verified order fulfillment to Firestore (${commitRes.status}): ${errText.slice(0, 240)}`
+    );
+  }
+  throw new Error(`Concurrent modification conflict fulfilling order ${orderId}.`);
+}
+async function markOrderFailedInFirestore(order) {
+  if (order.paymentStatus !== "pending") {
+    return order;
+  }
+  const saToken = await requireServiceAccountToken("markOrderFailedInFirestore");
+  const updatedOrder = {
+    ...order,
+    paymentStatus: "failed",
+    entitlementsGranted: false,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const res = await fetch(`${FIRESTORE_BASE_URL}/orders/${encodeURIComponent(order.id)}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${saToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      fields: toFirestoreFields(updatedOrder)
+    })
+  });
+  if (!res.ok) {
+    return order;
+  }
+  return updatedOrder;
+}
+async function updateOrderByAdminInFirestore(params) {
+  const { orderId, shipmentStatus, paymentStatus, onDecrementPhysicalStock } = params;
+  const saToken = await requireServiceAccountToken("updateOrderByAdminInFirestore");
+  const existing = await getOrderFromFirestore(orderId);
+  if (!existing) return null;
+  let currentOrder = existing.order;
+  if (paymentStatus === "paid" && currentOrder.paymentStatus !== "paid") {
+    const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
+      orderId,
+      paymentReference: currentOrder.paymentReference || `ADMIN_VERIFIED_${orderId}`,
+      onDecrementPhysicalStock
+    });
+    currentOrder = fulfilled.order;
+  }
+  const updatedOrder = {
+    ...currentOrder,
+    shipmentStatus: shipmentStatus || currentOrder.shipmentStatus,
+    paymentStatus: paymentStatus || currentOrder.paymentStatus,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const res = await fetch(`${FIRESTORE_BASE_URL}/orders/${encodeURIComponent(orderId)}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${saToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      fields: toFirestoreFields(updatedOrder)
+    })
+  });
+  if (!res.ok) {
+    return currentOrder;
+  }
+  const doc = await res.json();
+  return parseOrderFromDoc(doc) || updatedOrder;
+}
+async function runStructuredQueryByField(params) {
+  const { collectionId, fieldPath, stringValue, bearerToken } = params;
+  const res = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${bearerToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      structuredQuery: {
+        from: [{ collectionId }],
+        where: {
+          fieldFilter: {
+            field: { fieldPath },
+            op: "EQUAL",
+            value: { stringValue }
+          }
+        }
+      }
+    })
+  });
+  if (!res.ok) {
+    return [];
+  }
+  const rows = await res.json();
+  if (!Array.isArray(rows)) return [];
+  return rows.map((r) => r.document).filter((d) => Boolean(d && d.fields));
+}
+async function listEntitlementsByOrderFromFirestore(userId, orderId, bearerToken) {
+  const docs = await runStructuredQueryByField({
+    collectionId: "entitlements",
+    fieldPath: "userId",
+    stringValue: userId,
+    bearerToken
+  });
+  return docs.map((d) => parseEntitlementFromDoc(d)).filter((e) => Boolean(e && e.orderId === orderId));
+}
+async function listUserOrdersAndEntitlementsFromFirestore(userId, userIdToken) {
+  const bearerToken = await resolveCustomerScopedReadToken(userIdToken);
+  if (!bearerToken) {
+    return { orders: [], entitlements: [] };
+  }
+  const [orderDocs, entitlementDocs] = await Promise.all([
+    runStructuredQueryByField({
+      collectionId: "orders",
+      fieldPath: "userId",
+      stringValue: userId,
+      bearerToken
+    }),
+    runStructuredQueryByField({
+      collectionId: "entitlements",
+      fieldPath: "userId",
+      stringValue: userId,
+      bearerToken
+    })
+  ]);
+  const orders = orderDocs.map((d) => parseOrderFromDoc(d)).filter((o) => Boolean(o && o.userId === userId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const entitlements = entitlementDocs.map((d) => parseEntitlementFromDoc(d)).filter((e) => Boolean(e && e.userId === userId));
+  return { orders, entitlements };
+}
+async function listUserEntitledProductIdsFromFirestore(userId, userIdToken) {
+  const bearerToken = await resolveCustomerScopedReadToken(userIdToken);
+  if (!bearerToken) return [];
+  const entitlementDocs = await runStructuredQueryByField({
+    collectionId: "entitlements",
+    fieldPath: "userId",
+    stringValue: userId,
+    bearerToken
+  });
+  return entitlementDocs.map((d) => parseEntitlementFromDoc(d)).filter((e) => Boolean(e && e.userId === userId)).map((e) => e.productId);
+}
+async function listAllOrdersFromFirestoreForAdmin() {
+  const saToken = await requireServiceAccountToken("listAllOrdersFromFirestoreForAdmin");
+  const res = await fetch(`${FIRESTORE_BASE_URL}/orders?pageSize=200`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${saToken}`
+    }
+  });
+  if (!res.ok) {
+    return [];
+  }
+  const data = await res.json();
+  const docs = Array.isArray(data.documents) ? data.documents : [];
+  return docs.map((d) => parseOrderFromDoc(d)).filter((o) => Boolean(o)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 // src/data/sampleCatalog.ts
@@ -326,8 +869,8 @@ var INITIAL_PRODUCTS = [
     featured: true,
     status: "published",
     authorOrInstructor: "Satya Narayana",
-    shortDescription: "Comprehensive recorded course on Django ORM, authentication, webhook security, payment gateways, and serverless deployment.",
-    description: "Learn how to architect secure, maintainable Django web applications and RESTful backends. Includes dedicated modules on Firebase token verification, Cashfree webhook signature verification, and relational schema design.",
+    shortDescription: "Comprehensive recorded course on Django ORM, authentication, API security, and cloud deployment.",
+    description: "Learn how to architect secure, maintainable Django web applications and RESTful backends. Includes dedicated modules on token authentication, role-based access control, and relational schema design.",
     coverType: "HD Recorded Course (5 Modules)",
     level: "Intermediate",
     duration: "28 Hours",
@@ -411,7 +954,7 @@ var INITIAL_PRODUCTS = [
     status: "published",
     authorOrInstructor: "Satya Narayana",
     shortDescription: "Authoritative downloadable digital textbook covering clean Python idioms, SQL indexing strategies, and debugging.",
-    description: "Delivered as a protected digital PDF download upon verified purchase. Includes 320 pages of annotated code examples, query execution diagrams, and exercises.",
+    description: "Delivered as a digital PDF download upon purchase. Includes 320 pages of annotated code examples, query execution diagrams, and exercises.",
     coverType: "Digital PDF (320 Pages)",
     level: "All Levels",
     duration: "320 Pages",
@@ -431,7 +974,7 @@ var INITIAL_PRODUCTS = [
     featured: true,
     status: "published",
     authorOrInstructor: "Satya Narayana",
-    shortDescription: "Authoritative physical hardcover edition shipped to your doorstep. Covers API security, database modeling, and payment flows.",
+    shortDescription: "Authoritative physical hardcover edition shipped to your doorstep. Covers API security, database modeling, and full-stack architecture.",
     description: "Printed on archival-grade paper with sewn hardcover binding. Requires a valid Indian delivery address at checkout and includes shipment status tracking in your dashboard.",
     coverType: "Physical Hardcover (410 Pages)",
     level: "Intermediate",
@@ -523,8 +1066,8 @@ var INITIAL_COURSE_DETAILS = {
     language: "English",
     level: "Intermediate",
     duration: "28 Hours",
-    introduction: "A practical engineering course focused on building secure backend web services with Python and Django, complete with token authentication and payment webhook verification.",
-    syllabusSummary: "Module 1: HTTP, Middleware & URL Routing \xB7 Module 2: Relational Modeling & Query Optimization \xB7 Module 3: Firebase Admin SDK & RBAC Security \xB7 Module 4: Cashfree INR Webhooks & Vercel Deployment.",
+    introduction: "A practical engineering course focused on building secure backend web services with Python and Django, complete with token authentication and API architecture.",
+    syllabusSummary: "Module 1: HTTP, Middleware & URL Routing \xB7 Module 2: Relational Modeling & Query Optimization \xB7 Module 3: Token Authentication & RBAC Security \xB7 Module 4: Production Deployment & Monitoring.",
     status: "published"
   },
   "course-react-typescript": {
@@ -612,13 +1155,13 @@ var INITIAL_LESSONS = [
   {
     id: "lesson-dj-2",
     courseId: "course-django-fullstack",
-    moduleTitle: "Module 2: Authentication & Payment Gateways",
-    title: "02. Verifying Firebase ID Tokens & Cashfree Webhooks in Django",
+    moduleTitle: "Module 2: Authentication & API Security",
+    title: "02. Role-Based Access Control & REST API Validation in Django",
     orderIndex: 2,
     durationMinutes: 46,
     isFreePreview: false,
     videoStoragePath: "protected/courses/course-django-fullstack/lesson-02.mp4",
-    notes: "Implementing HMAC-SHA256 raw-body webhook verification and idempotent order fulfillment."
+    notes: "Implementing clean authentication middleware and idempotent order fulfillment."
   },
   {
     id: "lesson-react-1",
@@ -635,12 +1178,12 @@ var INITIAL_LESSONS = [
     id: "lesson-react-2",
     courseId: "course-react-typescript",
     moduleTitle: "Module 2: State & Data Fetching",
-    title: "02. Real-Time Firestore Listeners & Optimistic UI Patterns",
+    title: "02. Async State Management & Optimistic UI Patterns",
     orderIndex: 2,
     durationMinutes: 38,
     isFreePreview: false,
     videoStoragePath: "protected/courses/course-react-typescript/lesson-02.mp4",
-    notes: "Handling loading, empty, and permission error states cleanly."
+    notes: "Handling loading, empty, and error states cleanly."
   },
   {
     id: "lesson-ai-1",
@@ -684,33 +1227,6 @@ if (!process.env.VERCEL) {
   } catch {
   }
 }
-var adminAppInitialized = false;
-async function ensureAdminAppInitialized() {
-  if (adminAppInitialized) return true;
-  try {
-    const projectId = process.env.FIREBASE_PROJECT_ID;
-    const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-    const rawPrivateKey = process.env.FIREBASE_PRIVATE_KEY;
-    if (projectId && clientEmail && rawPrivateKey && projectId !== "your-project-id" && !rawPrivateKey.includes("YOUR_PRIVATE_KEY_HERE") && rawPrivateKey.includes("BEGIN PRIVATE KEY")) {
-      const { initializeApp: initializeAdminApp, cert, getApps } = await import("firebase-admin/app");
-      if (getApps().length === 0) {
-        initializeAdminApp({
-          credential: cert({
-            projectId,
-            clientEmail,
-            privateKey: rawPrivateKey.replace(/\\n/g, "\n")
-          }),
-          storageBucket: process.env.FIREBASE_STORAGE_BUCKET
-        });
-      }
-      adminAppInitialized = true;
-      return true;
-    }
-  } catch {
-    adminAppInitialized = false;
-  }
-  return false;
-}
 var serverProducts = new Map(
   INITIAL_PRODUCTS.map((p) => [p.id, { ...p }])
 );
@@ -726,155 +1242,142 @@ var serverLessons = new Map(
 var serverBanners = new Map(
   INITIAL_BANNERS.map((b) => [b.id, { ...b }])
 );
-var serverOrders = /* @__PURE__ */ new Map();
-var serverEntitlements = /* @__PURE__ */ new Map();
-function decodeJwtPayload(token) {
+var serverAdminUids = /* @__PURE__ */ new Set();
+var legacyStorageTokensRevoked = false;
+var verifiedTokenCache = /* @__PURE__ */ new Map();
+function getDownloadSigningSecret() {
+  const configuredSecret = (process.env.FIREBASE_PRIVATE_KEY || "").trim() || (process.env.CASHFREE_SECRET_KEY || "").trim();
+  if (configuredSecret) {
+    return configuredSecret;
+  }
+  return `satya-preview-hmac-${firebase_applet_config_default.projectId}-${firebase_applet_config_default.appId}`;
+}
+function getCashfreeConfig() {
+  const appId = (process.env.CASHFREE_APP_ID || "").trim();
+  const secretKey = (process.env.CASHFREE_SECRET_KEY || "").trim();
+  const rawEnv = (process.env.CASHFREE_ENV || "PRODUCTION").trim().toUpperCase();
+  const isSandbox = rawEnv === "SANDBOX" || rawEnv === "TEST";
+  const apiVersion = (process.env.CASHFREE_API_VERSION || "2023-08-01").trim();
+  const baseUrl = isSandbox ? "https://sandbox.cashfree.com/pg" : "https://api.cashfree.com/pg";
+  return {
+    appId,
+    secretKey,
+    apiVersion,
+    baseUrl,
+    mode: isSandbox ? "sandbox" : "production",
+    configured: Boolean(appId && secretKey)
+  };
+}
+function createSignedDownloadToken(uid, resourceIdentifier, expiresAtMs) {
+  const payload = `${uid}|${resourceIdentifier}|${expiresAtMs}`;
+  const sig = crypto2.createHmac("sha256", getDownloadSigningSecret()).update(payload).digest("hex");
+  return Buffer.from(`${payload}|${sig}`).toString("base64url");
+}
+function verifySignedDownloadToken(token, expectedResourceIdentifier) {
   try {
-    const parts = token.split(".");
-    if (parts.length === 3) {
-      const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-      if (payload && (payload.user_id || payload.sub)) {
-        return {
-          uid: payload.user_id || payload.sub,
-          email: payload.email,
-          emailVerified: Boolean(payload.email_verified),
-          admin: Boolean(payload.admin)
-        };
+    const decoded = Buffer.from(token, "base64url").toString("utf8");
+    const parts = decoded.split("|");
+    if (parts.length !== 4) return { valid: false };
+    const [uid, resourceId, expStr, providedSig] = parts;
+    if (resourceId !== expectedResourceIdentifier) return { valid: false };
+    const expMs = Number(expStr);
+    if (!Number.isFinite(expMs) || Date.now() > expMs) return { valid: false };
+    const expectedSig = crypto2.createHmac("sha256", getDownloadSigningSecret()).update(`${uid}|${resourceId}|${expStr}`).digest("hex");
+    if (providedSig.length !== expectedSig.length || !crypto2.timingSafeEqual(Buffer.from(providedSig), Buffer.from(expectedSig))) {
+      return { valid: false };
+    }
+    return { valid: true, uid };
+  } catch {
+    return { valid: false };
+  }
+}
+function extractProtectedStorageObjectPath(pathOrUrl) {
+  const trimmed = pathOrUrl.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("protected/") || trimmed.startsWith("public/")) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname.includes("firebasestorage.googleapis.com")) {
+      const match = parsed.pathname.match(/\/o\/(.+)$/);
+      if (match?.[1]) {
+        return decodeURIComponent(match[1]);
       }
     }
   } catch {
   }
   return null;
 }
+async function ensureLegacyProtectedStorageTokensRevoked() {
+  if (legacyStorageTokensRevoked || !firebase_applet_config_default.storageBucket) return;
+  try {
+    await revokeProtectedStorageDownloadTokens(firebase_applet_config_default.storageBucket);
+    legacyStorageTokensRevoked = true;
+  } catch {
+  }
+}
 async function resolveServerAuthContext(req) {
-  let authHeader = req.headers.authorization;
-  let vercelHeaders = null;
-  const rawVercelSc = req.headers["x-vercel-sc-headers"];
-  if (typeof rawVercelSc === "string") {
-    try {
-      vercelHeaders = JSON.parse(rawVercelSc);
-      if (vercelHeaders && !authHeader && typeof vercelHeaders.authorization === "string") {
-        authHeader = vercelHeaders.authorization;
-      }
-    } catch {
-    }
+  const authHeader = req.headers.authorization;
+  if (!authHeader || typeof authHeader !== "string" || !authHeader.startsWith("Bearer ")) {
+    return null;
   }
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    const idToken = authHeader.slice("Bearer ".length).trim();
-    if (idToken) {
-      const isReady = await ensureAdminAppInitialized();
-      if (isReady) {
-        try {
-          const { getAuth: getAdminAuth } = await import("firebase-admin/auth");
-          const decoded = await getAdminAuth().verifyIdToken(idToken);
-          return {
-            uid: decoded.uid,
-            email: decoded.email,
-            emailVerified: decoded.email_verified,
-            customClaims: {
-              admin: Boolean(decoded.admin)
-            }
-          };
-        } catch {
-        }
+  const idToken = authHeader.slice("Bearer ".length).trim();
+  if (!idToken) return null;
+  const cached = verifiedTokenCache.get(idToken);
+  if (cached && cached.expiresAtMs > Date.now()) {
+    return cached.authCtx;
+  }
+  try {
+    const apiKey = firebase_applet_config_default.apiKey;
+    const response = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken })
       }
-      const decodedPayload = decodeJwtPayload(idToken);
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin)
-          }
-        };
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const data = await response.json();
+    const fbUser = data.users?.[0];
+    if (!fbUser || !fbUser.localId) {
+      return null;
+    }
+    let customAdminClaim = false;
+    if (fbUser.customAttributes) {
+      try {
+        const parsedClaims = JSON.parse(fbUser.customAttributes);
+        customAdminClaim = parsedClaims?.admin === true || parsedClaims?.role === "admin";
+      } catch {
       }
     }
-  }
-  const sessionUid = req.headers["x-satya-uid"] || vercelHeaders && vercelHeaders["x-satya-uid"] || req.headers["x-user-id"] || req.headers["x-user-uid"];
-  const sessionEmail = req.headers["x-satya-email"] || vercelHeaders && vercelHeaders["x-satya-email"];
-  const sessionVerified = req.headers["x-satya-email-verified"] || vercelHeaders && vercelHeaders["x-satya-email-verified"];
-  const sessionAdminClaim = req.headers["x-satya-admin-claim"] || vercelHeaders && vercelHeaders["x-satya-admin-claim"];
-  if (typeof sessionUid === "string" && sessionUid.trim().length > 0) {
-    return {
-      uid: sessionUid.trim(),
-      email: typeof sessionEmail === "string" ? sessionEmail.trim() : void 0,
-      emailVerified: sessionVerified === "true",
+    const email = fbUser.email?.trim();
+    const emailVerified = Boolean(fbUser.emailVerified);
+    const isVerifiedBootstrappedAdmin = Boolean(email) && emailVerified === true && email.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
+    if (isVerifiedBootstrappedAdmin || customAdminClaim) {
+      serverAdminUids.add(fbUser.localId);
+    }
+    const authCtx = {
+      uid: fbUser.localId,
+      email,
+      emailVerified,
       customClaims: {
-        admin: sessionAdminClaim === "true"
-      }
+        admin: customAdminClaim
+      },
+      isAdminRecordPresent: serverAdminUids.has(fbUser.localId),
+      idToken
     };
+    verifiedTokenCache.set(idToken, {
+      authCtx,
+      expiresAtMs: Date.now() + 2 * 60 * 1e3
+    });
+    return authCtx;
+  } catch {
+    return null;
   }
-  const body = req.body;
-  if (body && typeof body === "object") {
-    if (typeof body.idToken === "string" && body.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(body.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin)
-          }
-        };
-      }
-    }
-    const bodyUid = body.userId || body.uid || body.customerUid || body.user?.uid;
-    if (typeof bodyUid === "string" && bodyUid.trim().length > 0) {
-      const bodyEmail = typeof (body.userEmail || body.customerEmail || body.email) === "string" ? (body.userEmail || body.customerEmail || body.email).trim() : void 0;
-      const isAdminEmail = typeof bodyEmail === "string" && bodyEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-      return {
-        uid: bodyUid.trim(),
-        email: bodyEmail,
-        emailVerified: body.userEmailVerified === true || body.emailVerified === true,
-        customClaims: {
-          admin: Boolean((body.userRole === "admin" || body.role === "admin") && isAdminEmail)
-        }
-      };
-    }
-  }
-  const query = req.query;
-  if (query && typeof query === "object") {
-    if (typeof query.idToken === "string" && query.idToken.trim().length > 0) {
-      const decodedPayload = decodeJwtPayload(query.idToken.trim());
-      if (decodedPayload && decodedPayload.uid) {
-        return {
-          uid: decodedPayload.uid,
-          email: decodedPayload.email,
-          emailVerified: decodedPayload.emailVerified,
-          customClaims: {
-            admin: Boolean(decodedPayload.admin)
-          }
-        };
-      }
-    }
-    const queryUid = query.userId || query.uid;
-    if (typeof queryUid === "string" && queryUid.trim().length > 0) {
-      const queryEmail = typeof (query.userEmail || query.email) === "string" ? String(query.userEmail || query.email).trim() : void 0;
-      const isAdminEmail = typeof queryEmail === "string" && queryEmail.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-      return {
-        uid: queryUid.trim(),
-        email: queryEmail,
-        emailVerified: query.userEmailVerified === "true" || query.emailVerified === "true",
-        customClaims: {
-          admin: Boolean((query.userRole === "admin" || query.role === "admin") && isAdminEmail)
-        }
-      };
-    }
-  }
-  return null;
-}
-function cleanEnvString(val) {
-  if (!val) return "";
-  let cleaned = val.trim();
-  if (cleaned.startsWith('"') && cleaned.endsWith('"') || cleaned.startsWith("'") && cleaned.endsWith("'")) {
-    cleaned = cleaned.slice(1, -1).trim();
-  }
-  return cleaned;
-}
-function getCashfreeSecretKey() {
-  return cleanEnvString(process.env.CASHFREE_SECRET_KEY);
 }
 function getActiveCouponsMap() {
   const map = {};
@@ -885,55 +1388,84 @@ function getActiveCouponsMap() {
   }
   return map;
 }
-function fulfillVerifiedPaidOrder(order, cashfreePaymentId) {
-  const transition = evaluateOrderWebhookTransition({
-    order,
-    cashfreePaymentStatus: "SUCCESS",
-    paidAmountInr: order.totalAmountInr,
-    cashfreePaymentId
-  });
-  if (transition.alreadyProcessed) {
-    const existingGrants = Array.from(serverEntitlements.values()).filter(
-      (e) => e.orderId === order.id
-    );
-    return { alreadyProcessed: true, entitlementsGranted: existingGrants };
+function decrementPhysicalCatalogStock(productId, quantity) {
+  const prod = serverProducts.get(productId);
+  if (prod && (prod.format === "physical_book" || prod.format === "hybrid_book")) {
+    prod.stock = Math.max(0, prod.stock - quantity);
+    serverProducts.set(prod.id, prod);
   }
-  if (transition.shouldUpdateOrder) {
-    order.paymentStatus = transition.nextPaymentStatus;
-    order.shipmentStatus = transition.nextShipmentStatus;
-    order.cashfreePaymentId = cashfreePaymentId;
-    order.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    serverOrders.set(order.id, order);
+}
+async function verifyOrderWithCashfreeServer(order) {
+  const cfConfig = getCashfreeConfig();
+  if (!cfConfig.configured) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "UNCONFIGURED",
+      paymentReference: "",
+      error: "Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server."
+    };
   }
-  if (transition.shouldDecrementStock) {
-    for (const item of order.lineItems) {
-      const prod = serverProducts.get(item.productId);
-      if (prod && (prod.format === "physical_book" || prod.format === "hybrid_book")) {
-        prod.stock = Math.max(0, prod.stock - item.quantity);
-        serverProducts.set(prod.id, prod);
+  const cfRes = await fetch(
+    `${cfConfig.baseUrl}/orders/${encodeURIComponent(order.id)}`,
+    {
+      method: "GET",
+      headers: {
+        "x-client-id": cfConfig.appId,
+        "x-client-secret": cfConfig.secretKey,
+        "x-api-version": cfConfig.apiVersion,
+        Accept: "application/json"
       }
     }
+  );
+  if (!cfRes.ok) {
+    const errBody = await cfRes.text();
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "LOOKUP_FAILED",
+      paymentReference: "",
+      error: `Cashfree order verification request failed (${cfRes.status}): ${errBody.slice(0, 200)}`
+    };
   }
-  const granted = [];
-  if (transition.shouldGrantEntitlements) {
-    for (const item of order.lineItems) {
-      if (item.format === "recorded_course" || item.format === "digital_book" || item.format === "hybrid_book") {
-        const entitlementId = `${order.userId}_${item.productId}`;
-        const record = {
-          id: entitlementId,
-          userId: order.userId,
-          productId: item.productId,
-          productType: item.type,
-          orderId: order.id,
-          downloadPath: item.type === "course" ? `protected/courses/${item.productId}` : `protected/books/${item.productId}/${item.productId}.pdf`,
-          grantedAt: (/* @__PURE__ */ new Date()).toISOString()
-        };
-        serverEntitlements.set(entitlementId, record);
-        granted.push(record);
+  const cfOrder = await cfRes.json();
+  const cfStatus = String(cfOrder.order_status || "ACTIVE").toUpperCase();
+  const amountMatches = typeof cfOrder.order_amount === "number" && Math.abs(cfOrder.order_amount - order.totalAmountInr) < 0.01;
+  const currencyMatches = String(cfOrder.order_currency || "INR").toUpperCase() === "INR";
+  if (cfStatus === "PAID" && amountMatches && currencyMatches) {
+    let paymentRef = String(cfOrder.cf_order_id || `CF_${order.id}`);
+    try {
+      const paymentsRes = await fetch(
+        `${cfConfig.baseUrl}/orders/${encodeURIComponent(order.id)}/payments`,
+        {
+          method: "GET",
+          headers: {
+            "x-client-id": cfConfig.appId,
+            "x-client-secret": cfConfig.secretKey,
+            "x-api-version": cfConfig.apiVersion,
+            Accept: "application/json"
+          }
+        }
+      );
+      if (paymentsRes.ok) {
+        const paymentsList = await paymentsRes.json();
+        const successPayment = Array.isArray(paymentsList) ? paymentsList.find((p) => String(p.payment_status).toUpperCase() === "SUCCESS") : void 0;
+        if (successPayment?.cf_payment_id) {
+          paymentRef = `CF_PAY_${successPayment.cf_payment_id}`;
+        }
       }
+    } catch {
     }
+    return {
+      verifiedPaid: true,
+      cashfreeOrderStatus: "PAID",
+      paymentReference: paymentRef
+    };
   }
-  return { alreadyProcessed: false, entitlementsGranted: granted };
+  return {
+    verifiedPaid: false,
+    cashfreeOrderStatus: cfStatus,
+    paymentReference: "",
+    error: cfStatus === "PAID" && (!amountMatches || !currencyMatches) ? "Cashfree order amount or currency mismatch." : `Payment is not completed yet (Cashfree status: ${cfStatus}).`
+  };
 }
 function createApiApp() {
   const app2 = express();
@@ -950,97 +1482,39 @@ function createApiApp() {
     }
     next();
   });
-  app2.get("/api/cashfree/webhook", (_req, res) => {
-    res.status(200).json({
-      status: "ok",
-      service: "Satya's Education Cashfree Webhook Service",
-      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+  app2.use(
+    express.json({
+      limit: "2mb",
+      verify: (req, _res, buf) => {
+        req.rawBody = buf.toString("utf8");
+      }
+    })
+  );
+  app2.get("/api/auth/session", async (req, res) => {
+    const authCtx = await resolveServerAuthContext(req);
+    if (!authCtx || !authCtx.uid) {
+      res.status(401).json({ authenticated: false, error: "Invalid or missing Firebase ID token." });
+      return;
+    }
+    const isAdmin = canUserPerformAdminOperation(authCtx);
+    res.json({
+      authenticated: true,
+      uid: authCtx.uid,
+      email: authCtx.email || "",
+      emailVerified: Boolean(authCtx.emailVerified),
+      role: isAdmin ? "admin" : "student"
     });
   });
-  app2.post(
-    "/api/cashfree/webhook",
-    express.raw({ type: "application/json" }),
-    (req, res) => {
-      const signatureHeader = req.headers["x-webhook-signature"];
-      const timestampHeader = req.headers["x-webhook-timestamp"];
-      const rawBody = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : typeof req.body === "string" ? req.body : JSON.stringify(req.body || {});
-      const secretKey = getCashfreeSecretKey();
-      const isValidSig = verifyCashfreeWebhookSignature({
-        timestampHeader,
-        signatureHeader,
-        rawBody,
-        secretKey
-      });
-      if (!isValidSig) {
-        const isDashboardTest = !signatureHeader || !timestampHeader || !secretKey || rawBody === "" || rawBody === "{}" || rawBody.toLowerCase().includes("test") || rawBody.toLowerCase().includes("ping");
-        if (isDashboardTest) {
-          res.status(200).json({
-            status: "ok",
-            message: "Cashfree webhook test ping acknowledged successfully."
-          });
-          return;
-        }
-        res.status(401).json({
-          error: "Invalid Cashfree webhook HMAC-SHA256 signature."
-        });
-        return;
-      }
-      try {
-        const payload = JSON.parse(rawBody);
-        const cfOrderId = payload?.data?.order?.order_id;
-        const paymentStatusRaw = payload?.data?.payment?.payment_status || "PENDING";
-        const paymentAmount = Number(payload?.data?.payment?.payment_amount || 0);
-        const cfPaymentId = String(payload?.data?.payment?.cf_payment_id || `cf_pay_${Date.now()}`);
-        const order = serverOrders.get(cfOrderId);
-        if (!order) {
-          res.status(404).json({ error: `Order ${cfOrderId} not found.` });
-          return;
-        }
-        if (paymentStatusRaw === "SUCCESS") {
-          const result = fulfillVerifiedPaidOrder(order, cfPaymentId);
-          res.status(200).json({
-            status: "ok",
-            orderId: order.id,
-            paymentStatus: order.paymentStatus,
-            alreadyProcessed: result.alreadyProcessed,
-            entitlementsGrantedCount: result.entitlementsGranted.length
-          });
-          return;
-        }
-        const transition = evaluateOrderWebhookTransition({
-          order,
-          cashfreePaymentStatus: paymentStatusRaw,
-          paidAmountInr: paymentAmount,
-          cashfreePaymentId: cfPaymentId
-        });
-        if (transition.shouldUpdateOrder) {
-          order.paymentStatus = transition.nextPaymentStatus;
-          order.shipmentStatus = transition.nextShipmentStatus;
-          order.cashfreePaymentId = cfPaymentId;
-          order.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-          serverOrders.set(order.id, order);
-        }
-        res.status(200).json({
-          status: "ok",
-          orderId: order.id,
-          paymentStatus: order.paymentStatus,
-          alreadyProcessed: transition.alreadyProcessed,
-          reason: transition.reason
-        });
-      } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : "Invalid webhook JSON payload."
-        });
-      }
-    }
-  );
-  app2.use(express.json({ limit: "2mb" }));
   app2.get("/api/catalog", (_req, res) => {
+    const sanitizedLessons = Array.from(serverLessons.values()).map((lesson) => ({
+      ...lesson,
+      videoStoragePath: lesson.isFreePreview ? lesson.videoStoragePath : ""
+    }));
     res.json({
       products: Array.from(serverProducts.values()),
       categories: Array.from(serverCategories.values()),
       courseDetails: Object.fromEntries(serverCourses.entries()),
-      lessons: Array.from(serverLessons.values()),
+      lessons: sanitizedLessons,
       banners: Array.from(serverBanners.values())
     });
   });
@@ -1055,15 +1529,22 @@ function createApiApp() {
     });
     res.json(result);
   });
-  app2.post("/api/cashfree/create-order", async (req, res) => {
+  const handleCreatePendingCashfreeOrder = async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
       res.status(401).json({
-        error: "Authentication required. Please sign in before checking out."
+        error: "Authentication required. Please log in with your account before checking out."
       });
       return;
     }
-    const { cartItems, couponCode, shippingAddress, customerName, customerEmail, customerPhone } = req.body || {};
+    const {
+      cartItems,
+      couponCode,
+      shippingAddress,
+      customerName,
+      customerPhone,
+      returnUrl
+    } = req.body || {};
     const hasAddress = Boolean(
       shippingAddress && typeof shippingAddress.line1 === "string" && shippingAddress.line1.trim().length >= 3 && typeof shippingAddress.city === "string" && shippingAddress.city.trim().length >= 2 && typeof shippingAddress.postalCode === "string" && shippingAddress.postalCode.trim().length >= 4
     );
@@ -1078,20 +1559,19 @@ function createApiApp() {
       res.status(400).json({ error: verifiedCart.error || "Cart validation failed." });
       return;
     }
-    const orderId = `ord_satya_${Date.now()}_${crypto2.randomBytes(3).toString("hex")}`;
-    const addressSummary = verifiedCart.hasPhysicalItems ? `${shippingAddress.fullName || customerName || "Student"}, ${shippingAddress.line1}, ${shippingAddress.city}, ${shippingAddress.state || ""} - ${shippingAddress.postalCode} (${shippingAddress.phone || customerPhone || ""})` : "Digital Delivery (My Courses & My Books Library)";
+    const orderId = `ORD_${Date.now().toString().slice(-6)}_${crypto2.randomBytes(3).toString("hex").toUpperCase()}`;
+    const addressSummary = verifiedCart.hasPhysicalItems ? `${shippingAddress.fullName || customerName || "Customer"}, ${shippingAddress.line1}, ${shippingAddress.city}, ${shippingAddress.state || ""} - ${shippingAddress.postalCode} (${shippingAddress.phone || customerPhone || ""})` : "Digital Delivery (My Courses & My Books Library)";
     const itemSummary = verifiedCart.items.map((i) => `${i.title} x${i.quantity} (\u20B9${i.lineTotalInr})`).join(" \xB7 ");
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-    const newOrder = {
+    const draftOrder = {
       id: orderId,
       userId: authCtx.uid,
       customerName: String(customerName || authCtx.email || "Student").slice(0, 120),
-      customerEmail: String(customerEmail || authCtx.email || "student@example.com").slice(0, 256),
+      customerEmail: String(authCtx.email || "student@example.com").slice(0, 256),
       totalAmountInr: verifiedCart.totalAmountInr,
       paymentStatus: "pending",
       shipmentStatus: verifiedCart.hasPhysicalItems ? "processing" : "not_applicable",
-      cashfreeOrderId: orderId,
-      cashfreePaymentId: "",
+      paymentReference: "",
       hasPhysicalItems: verifiedCart.hasPhysicalItems,
       shippingAddressSummary: addressSummary.slice(0, 600),
       itemSummary: itemSummary.slice(0, 1500),
@@ -1103,246 +1583,220 @@ function createApiApp() {
         quantity: item.quantity,
         unitPriceInr: item.unitPriceInr
       })),
+      entitlementsGranted: false,
       createdAt: nowIso,
       updatedAt: nowIso
     };
-    serverOrders.set(orderId, newOrder);
-    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
-    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd = cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === "production" || cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === "production";
-    const isProdKey = cfSecret.includes("_prod_");
-    const isTestKey = cfAppId.startsWith("TEST") || cfSecret.includes("_test_");
-    const cfEnv = (isExplicitProd || isProdKey) && !isTestKey ? "production" : isExplicitProd ? "production" : "sandbox";
-    if (cfEnv === "production") {
-      if (isTestKey) {
-        res.status(400).json({
-          error: 'Configuration Error: You have configured CASHFREE_ENV="production", but your API credentials are for the Sandbox Test environment (starts with TEST / contains _test_). To accept real payments, please switch to the LIVE tab in your Cashfree Merchant Dashboard (https://merchant.cashfree.com) and copy your LIVE App ID and Secret Key into Vercel environment variables.'
-        });
-        return;
-      }
-      if (!cfAppId || !cfSecret || cfAppId === "TEST_YOUR_CASHFREE_APP_ID" || cfSecret === "TEST_YOUR_CASHFREE_SECRET_KEY") {
-        res.status(400).json({
-          error: "Cashfree Live Configuration Missing: To accept live payments, please add CASHFREE_APP_ID and CASHFREE_SECRET_KEY from your Cashfree Live dashboard to your Vercel Project Settings -> Environment Variables, and then redeploy."
-        });
-        return;
-      }
-    }
-    if (cfAppId && cfSecret && cfAppId !== "TEST_YOUR_CASHFREE_APP_ID" && cfSecret !== "TEST_YOUR_CASHFREE_SECRET_KEY") {
-      try {
-        const baseUrl = cfEnv === "production" ? "https://api.cashfree.com/pg/orders" : "https://sandbox.cashfree.com/pg/orders";
-        const appUrl = (process.env.APP_URL || "https://satyaeducationinstitute.vercel.app").replace(/\/$/, "");
-        const cfRes = await fetch(baseUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-version": process.env.CASHFREE_API_VERSION || "2023-08-01",
-            "x-client-id": cfAppId,
-            "x-client-secret": cfSecret
-          },
-          body: JSON.stringify({
-            order_id: orderId,
-            order_amount: verifiedCart.totalAmountInr,
-            order_currency: "INR",
-            customer_details: {
-              customer_id: authCtx.uid.slice(0, 45),
-              customer_name: newOrder.customerName,
-              customer_email: newOrder.customerEmail,
-              customer_phone: String(customerPhone || shippingAddress?.phone || "9876543210").replace(
-                /[^0-9]/g,
-                ""
-              ).slice(-10) || "9876543210"
-            },
-            order_meta: {
-              return_url: `${appUrl}/?order_id={order_id}`,
-              notify_url: `${appUrl}/api/cashfree/webhook`
-            }
-          })
-        });
-        if (cfRes.ok) {
-          const cfData = await cfRes.json();
-          res.json({
-            order: newOrder,
-            verifiedCart,
-            cashfreeMode: cfEnv,
-            paymentSessionId: cfData.payment_session_id || `session_${orderId}`
-          });
-          return;
-        } else {
-          const errData = await cfRes.json().catch(() => ({}));
-          console.error("Cashfree PG Order Creation Failed:", cfRes.status, errData);
-          res.status(400).json({
-            error: `Cashfree (${cfEnv.toUpperCase()}) Gateway Error: ${errData?.message || `Status ${cfRes.status}. Please check your API credentials.`}`
-          });
-          return;
-        }
-      } catch (err) {
-        console.error("Cashfree API invocation error:", err);
-        res.status(502).json({
-          error: `Failed to contact Cashfree payment servers: ${err instanceof Error ? err.message : String(err)}`
-        });
-        return;
-      }
-    }
-    if (process.env.VERCEL || process.env.NODE_ENV === "production") {
-      res.status(cfAppId && cfSecret ? 502 : 503).json({
-        error: cfAppId && cfSecret ? "Payment provider could not create the order. Please try again later." : "Online payments are temporarily unavailable."
+    let pendingOrder;
+    try {
+      pendingOrder = await createPendingOrderInFirestore(draftOrder);
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : "Unable to save pending order in Firestore."
       });
       return;
     }
-    res.json({
-      order: newOrder,
-      verifiedCart,
-      cashfreeMode: "sandbox",
-      paymentSessionId: `cf_sandbox_session_${orderId}`
-    });
-  });
-  app2.post("/api/cashfree/verify-order", async (req, res) => {
-    const authCtx = await resolveServerAuthContext(req);
-    if (!authCtx || !authCtx.uid) {
-      res.status(401).json({ error: "Authentication required." });
+    const cfConfig = getCashfreeConfig();
+    if (!cfConfig.configured) {
+      res.status(503).json({
+        error: 'Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server. Order has been saved in Firestore with status "pending" and will not be marked paid until verified with Cashfree.',
+        order: pendingOrder
+      });
       return;
     }
-    const { orderId, simulatedOutcome } = req.body || {};
-    const order = serverOrders.get(String(orderId || ""));
-    if (!order) {
-      res.status(404).json({ error: "Order not found." });
-      return;
-    }
-    if (order.userId !== authCtx.uid && !canUserPerformAdminOperation(authCtx)) {
-      res.status(403).json({ error: "Forbidden: You can only verify your own orders." });
-      return;
-    }
-    if (simulatedOutcome) {
-      if (process.env.VERCEL || process.env.NODE_ENV === "production") {
-        res.status(403).json({ error: "Simulated payment outcomes are disabled in production." });
-        return;
-      }
-      const outcomeStatus = simulatedOutcome === "SUCCESS" ? "SUCCESS" : simulatedOutcome === "FAILED" ? "FAILED" : "USER_DROPPED";
-      const cfPaymentId = `cf_pay_${Date.now()}`;
-      const timestamp = String(Date.now());
-      const webhookPayload = JSON.stringify({
-        data: {
-          order: {
-            order_id: order.id,
-            order_amount: order.totalAmountInr,
-            order_currency: "INR"
-          },
-          payment: {
-            cf_payment_id: cfPaymentId,
-            payment_status: outcomeStatus,
-            payment_amount: order.totalAmountInr,
-            payment_currency: "INR"
-          }
+    const sanitizedPhone = String(shippingAddress?.phone || customerPhone || "9876543210").replace(/[^0-9]/g, "").slice(-10) || "9876543210";
+    try {
+      const cfCreateRes = await fetch(`${cfConfig.baseUrl}/orders`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-client-id": cfConfig.appId,
+          "x-client-secret": cfConfig.secretKey,
+          "x-api-version": cfConfig.apiVersion,
+          Accept: "application/json"
         },
-        event_time: (/* @__PURE__ */ new Date()).toISOString(),
-        type: outcomeStatus === "SUCCESS" ? "PAYMENT_SUCCESS_WEBHOOK" : outcomeStatus === "FAILED" ? "PAYMENT_FAILED_WEBHOOK" : "PAYMENT_USER_DROPPED_WEBHOOK"
+        body: JSON.stringify({
+          order_id: pendingOrder.id,
+          order_amount: pendingOrder.totalAmountInr,
+          order_currency: "INR",
+          customer_details: {
+            customer_id: authCtx.uid.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48),
+            customer_name: pendingOrder.customerName,
+            customer_email: pendingOrder.customerEmail,
+            customer_phone: sanitizedPhone.length === 10 ? sanitizedPhone : "9876543210"
+          },
+          order_meta: {
+            return_url: typeof returnUrl === "string" && returnUrl.startsWith("http") ? returnUrl : void 0
+          },
+          order_note: pendingOrder.itemSummary.slice(0, 200)
+        })
       });
-      const secretKey = getCashfreeSecretKey();
-      const signature = computeCashfreeWebhookSignature(timestamp, webhookPayload, secretKey);
-      const signatureValid = verifyCashfreeWebhookSignature({
-        timestampHeader: timestamp,
-        signatureHeader: signature,
-        rawBody: webhookPayload,
-        secretKey
-      });
-      if (!signatureValid) {
-        res.status(400).json({ error: "Webhook signature self-check failed." });
-        return;
-      }
-      if (outcomeStatus === "SUCCESS") {
-        const fulfillment = fulfillVerifiedPaidOrder(order, cfPaymentId);
-        res.json({
-          verified: true,
-          order,
-          alreadyProcessed: fulfillment.alreadyProcessed,
-          entitlements: fulfillment.entitlementsGranted,
-          webhookSignatureVerified: true
+      const cfData = await cfCreateRes.json();
+      if (!cfCreateRes.ok || !cfData.payment_session_id) {
+        res.status(502).json({
+          error: cfData.message || "Failed to initialize payment session with Cashfree Payment Gateway.",
+          order: pendingOrder
         });
         return;
-      }
-      const transition = evaluateOrderWebhookTransition({
-        order,
-        cashfreePaymentStatus: outcomeStatus,
-        paidAmountInr: order.totalAmountInr,
-        cashfreePaymentId: cfPaymentId
-      });
-      if (transition.shouldUpdateOrder) {
-        order.paymentStatus = transition.nextPaymentStatus;
-        order.shipmentStatus = transition.nextShipmentStatus;
-        order.cashfreePaymentId = cfPaymentId;
-        order.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-        serverOrders.set(order.id, order);
       }
       res.json({
+        order: pendingOrder,
+        paymentSessionId: cfData.payment_session_id,
+        cashfreeMode: cfConfig.mode
+      });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? `Cashfree connection error: ${err.message}` : "Unable to reach Cashfree Payment Gateway.",
+        order: pendingOrder
+      });
+    }
+  };
+  app2.post("/api/payments/cashfree/create-order", handleCreatePendingCashfreeOrder);
+  app2.post("/api/orders/create", handleCreatePendingCashfreeOrder);
+  app2.post("/api/payments/cashfree/verify", async (req, res) => {
+    const authCtx = await resolveServerAuthContext(req);
+    if (!authCtx || !authCtx.uid) {
+      res.status(401).json({ error: "Authentication required to verify payment." });
+      return;
+    }
+    const orderId = String(req.body?.orderId || "").trim();
+    if (!orderId) {
+      res.status(400).json({ error: "Order ID is required for payment verification." });
+      return;
+    }
+    let fetched;
+    try {
+      fetched = await getOrderFromFirestore(orderId);
+    } catch (err) {
+      res.status(503).json({
         verified: false,
-        order,
-        alreadyProcessed: transition.alreadyProcessed,
-        entitlements: [],
-        webhookSignatureVerified: true,
-        reason: transition.reason
+        error: err instanceof Error ? err.message : "Privileged Firestore credentials are required to verify orders."
       });
       return;
     }
-    const cfAppId = cleanEnvString(process.env.CASHFREE_APP_ID);
-    const cfSecret = cleanEnvString(process.env.CASHFREE_SECRET_KEY);
-    const isExplicitProd = cleanEnvString(process.env.CASHFREE_ENV).toLowerCase() === "production" || cleanEnvString(process.env.VITE_CASHFREE_ENV).toLowerCase() === "production";
-    const isProdKey = Boolean(cfSecret && cfSecret.includes("_prod_"));
-    const isTestKey = Boolean(cfAppId && cfAppId.startsWith("TEST") || cfSecret && cfSecret.includes("_test_"));
-    const cfEnv = (isExplicitProd || isProdKey) && !isTestKey ? "production" : isExplicitProd ? "production" : "sandbox";
-    if (order.paymentStatus !== "paid" && cfAppId && cfSecret && cfAppId !== "TEST_YOUR_CASHFREE_APP_ID" && cfSecret !== "TEST_YOUR_CASHFREE_SECRET_KEY") {
+    if (!fetched) {
+      res.status(404).json({ error: "Order not found in Firestore." });
+      return;
+    }
+    const { order } = fetched;
+    const isCallerAdmin = canUserPerformAdminOperation(authCtx);
+    if (order.userId !== authCtx.uid && !isCallerAdmin) {
+      res.status(403).json({ error: "Forbidden: You do not own this order." });
+      return;
+    }
+    if (order.paymentStatus === "paid" && order.entitlementsGranted) {
+      const { entitlements } = await listUserOrdersAndEntitlementsFromFirestore(
+        order.userId,
+        authCtx.idToken
+      );
+      res.json({
+        verified: true,
+        order,
+        entitlements: entitlements.filter((e) => e.orderId === order.id),
+        alreadyFulfilled: true
+      });
+      return;
+    }
+    const verification = await verifyOrderWithCashfreeServer(order);
+    if (verification.verifiedPaid) {
       try {
-        const checkUrl = cfEnv === "production" ? `https://api.cashfree.com/pg/orders/${order.id}` : `https://sandbox.cashfree.com/pg/orders/${order.id}`;
-        const cfRes = await fetch(checkUrl, {
-          method: "GET",
-          headers: {
-            "x-api-version": process.env.CASHFREE_API_VERSION || "2023-08-01",
-            "x-client-id": cfAppId,
-            "x-client-secret": cfSecret
-          }
+        const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
+          orderId: order.id,
+          paymentReference: verification.paymentReference,
+          onDecrementPhysicalStock: decrementPhysicalCatalogStock
         });
-        if (cfRes.ok) {
-          const cfOrder = await cfRes.json();
-          if (cfOrder && (cfOrder.order_status === "PAID" || cfOrder.order_status === "SUCCESS")) {
-            const fulfillment = fulfillVerifiedPaidOrder(
-              order,
-              cfOrder.cf_order_id ? String(cfOrder.cf_order_id) : `cf_live_${Date.now()}`
-            );
-            res.json({
-              verified: true,
-              order,
-              alreadyProcessed: fulfillment.alreadyProcessed,
-              entitlements: fulfillment.entitlementsGranted,
-              webhookSignatureVerified: true
-            });
-            return;
-          }
-        }
+        res.json({
+          verified: true,
+          order: fulfilled.order,
+          entitlements: fulfilled.entitlements,
+          alreadyFulfilled: fulfilled.alreadyFulfilled
+        });
+        return;
       } catch (err) {
-        console.warn("Cashfree live order status check error:", err);
+        res.status(503).json({
+          verified: false,
+          error: err instanceof Error ? err.message : "Failed to persist verified payment and entitlements in Firestore."
+        });
+        return;
       }
     }
-    const userEntitlements = Array.from(serverEntitlements.values()).filter(
-      (e) => e.userId === order.userId
-    );
-    res.json({
-      verified: order.paymentStatus === "paid",
-      order,
-      entitlements: userEntitlements
+    let updatedOrder = order;
+    if (verification.cashfreeOrderStatus === "EXPIRED" || verification.cashfreeOrderStatus === "TERMINATED") {
+      updatedOrder = await markOrderFailedInFirestore(order);
+    }
+    res.status(402).json({
+      verified: false,
+      cashfreeOrderStatus: verification.cashfreeOrderStatus,
+      error: verification.error || "Payment has not been verified as PAID by Cashfree yet. Purchased content remains locked.",
+      order: updatedOrder
     });
   });
+  app2.post(
+    "/api/payments/cashfree/webhook",
+    async (req, res) => {
+      const cfConfig = getCashfreeConfig();
+      if (!cfConfig.configured) {
+        res.status(503).json({ error: "Cashfree webhook secret not configured." });
+        return;
+      }
+      const signature = String(req.headers["x-webhook-signature"] || "");
+      const timestamp = String(req.headers["x-webhook-timestamp"] || "");
+      const rawBody = req.rawBody || "";
+      if (!signature || !timestamp || !rawBody) {
+        res.status(400).json({ error: "Missing Cashfree webhook signature headers." });
+        return;
+      }
+      const expectedSignature = crypto2.createHmac("sha256", cfConfig.secretKey).update(`${timestamp}${rawBody}`).digest("base64");
+      if (signature.length !== expectedSignature.length || !crypto2.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+        res.status(401).json({ error: "Invalid Cashfree webhook signature." });
+        return;
+      }
+      const orderId = String(req.body?.data?.order?.order_id || "").trim();
+      let fetched;
+      try {
+        fetched = await getOrderFromFirestore(orderId);
+      } catch (err) {
+        res.status(503).json({
+          error: err instanceof Error ? err.message : "Firebase Service Account credentials are required to process webhooks."
+        });
+        return;
+      }
+      if (!fetched) {
+        res.status(404).json({ error: "Order not found in Firestore." });
+        return;
+      }
+      const { order } = fetched;
+      const verification = await verifyOrderWithCashfreeServer(order);
+      if (verification.verifiedPaid) {
+        const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
+          orderId: order.id,
+          paymentReference: verification.paymentReference,
+          onDecrementPhysicalStock: decrementPhysicalCatalogStock
+        });
+        res.json({
+          received: true,
+          orderId: fulfilled.order.id,
+          paymentStatus: fulfilled.order.paymentStatus,
+          alreadyFulfilled: fulfilled.alreadyFulfilled
+        });
+        return;
+      }
+      res.json({ received: true, orderId: order.id, paymentStatus: order.paymentStatus });
+    }
+  );
   app2.get("/api/user/library", async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
       res.status(401).json({ error: "Authentication required." });
       return;
     }
-    const myOrders = Array.from(serverOrders.values()).filter((o) => o.userId === authCtx.uid).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    const myEntitlements = Array.from(serverEntitlements.values()).filter(
-      (e) => e.userId === authCtx.uid
+    const { orders, entitlements } = await listUserOrdersAndEntitlementsFromFirestore(
+      authCtx.uid,
+      authCtx.idToken
     );
     res.json({
-      orders: myOrders,
-      entitlements: myEntitlements
+      orders,
+      entitlements
     });
   });
   app2.post("/api/content/signed-url", async (req, res) => {
@@ -1360,8 +1814,14 @@ function createApiApp() {
       if (lessonObj && lessonObj.isFreePreview) {
         isFreePreview = true;
       }
+    } else if (product.type === "course") {
+      const courseLessons = Array.from(serverLessons.values()).filter((l) => l.courseId === product.id).sort((a, b) => a.orderIndex - b.orderIndex);
+      lessonObj = courseLessons[0];
+      if (lessonObj && lessonObj.isFreePreview) {
+        isFreePreview = true;
+      }
     }
-    const userEntitledProductIds = authCtx?.uid ? Array.from(serverEntitlements.values()).filter((e) => e.userId === authCtx.uid).map((e) => e.productId) : [];
+    const userEntitledProductIds = authCtx?.uid ? await listUserEntitledProductIdsFromFirestore(authCtx.uid, authCtx.idToken) : [];
     const accessCheck = canUserAccessProtectedContent({
       auth: authCtx,
       productId: product.id,
@@ -1370,69 +1830,111 @@ function createApiApp() {
     });
     if (!accessCheck.allowed) {
       res.status(403).json({
-        error: "Access denied. You must purchase this item to access its protected recordings or files.",
+        error: "Access denied. You must purchase this item to access its recordings or files.",
         reason: accessCheck.reason
       });
       return;
     }
     const expiresAt = Date.now() + 15 * 60 * 1e3;
-    const tokenSig = crypto2.createHmac("sha256", getCashfreeSecretKey()).update(`${authCtx?.uid || "public"}:${product.id}:${lessonId || "book"}:${expiresAt}`).digest("hex").slice(0, 24);
+    const subjectUid = authCtx?.uid || "preview";
     if (product.type === "course") {
-      const videoUrl = lessonObj?.videoStoragePath.startsWith("http") ? lessonObj.videoStoragePath : product.previewVideoUrl || "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+      const resolvedLessonId = lessonObj?.id || "default";
+      const streamToken = createSignedDownloadToken(
+        subjectUid,
+        `${product.id}:${resolvedLessonId}`,
+        expiresAt
+      );
       res.json({
         allowed: true,
         reason: accessCheck.reason,
         expiresAt: new Date(expiresAt).toISOString(),
-        signedUrl: `${videoUrl}?token=${tokenSig}&expires=${expiresAt}`
+        signedUrl: `/api/content/stream-video?productId=${encodeURIComponent(
+          product.id
+        )}&lessonId=${encodeURIComponent(resolvedLessonId)}&token=${encodeURIComponent(
+          streamToken
+        )}`
       });
       return;
     }
+    const downloadToken = createSignedDownloadToken(subjectUid, product.id, expiresAt);
     res.json({
       allowed: true,
       reason: accessCheck.reason,
       expiresAt: new Date(expiresAt).toISOString(),
       signedUrl: `/api/content/download-book?productId=${encodeURIComponent(
         product.id
-      )}&uid=${encodeURIComponent(authCtx?.uid || "admin")}&expires=${expiresAt}&sig=${tokenSig}`
+      )}&token=${encodeURIComponent(downloadToken)}`
     });
+  });
+  app2.get("/api/content/stream-video", async (req, res) => {
+    const productId = String(req.query.productId || "");
+    const lessonId = String(req.query.lessonId || "");
+    const token = String(req.query.token || "");
+    const product = serverProducts.get(productId);
+    if (!product || product.type !== "course") {
+      res.status(404).send("Course not found.");
+      return;
+    }
+    const verification = verifySignedDownloadToken(token, `${productId}:${lessonId}`);
+    if (!verification.valid || !verification.uid) {
+      res.status(403).send("Forbidden: Valid signed video playback token required.");
+      return;
+    }
+    const lessonObj = serverLessons.get(lessonId);
+    const rawSource = lessonObj?.videoStoragePath || product.previewVideoUrl || "";
+    const storageObjPath = extractProtectedStorageObjectPath(rawSource);
+    if (storageObjPath && firebase_applet_config_default.storageBucket) {
+      await ensureLegacyProtectedStorageTokensRevoked();
+      const gcsSignedUrl = createGcsV4SignedReadUrl({
+        bucketName: firebase_applet_config_default.storageBucket,
+        objectPath: storageObjPath,
+        expiresInSeconds: 900
+      });
+      if (gcsSignedUrl) {
+        res.setHeader("Cache-Control", "private, no-store");
+        res.redirect(302, gcsSignedUrl);
+        return;
+      }
+      if (!lessonObj?.isFreePreview) {
+        res.status(503).send(
+          "Service Account credentials (FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY) are required to sign protected course video streams."
+        );
+        return;
+      }
+    }
+    const fallbackVideoUrl = rawSource.startsWith("http") && !rawSource.includes("firebasestorage.googleapis.com") ? rawSource : product.previewVideoUrl || "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+    res.setHeader("Cache-Control", "private, no-store");
+    res.redirect(302, fallbackVideoUrl);
   });
   app2.get("/api/content/download-book", (req, res) => {
     const productId = String(req.query.productId || "");
-    const uid = String(req.query.uid || "");
-    const expires = Number(req.query.expires || 0);
-    const sig = String(req.query.sig || "");
-    if (!productId || !uid || !expires || Date.now() > expires) {
-      res.status(403).send("Signed download link has expired or is invalid.");
-      return;
-    }
-    const expectedSig = crypto2.createHmac("sha256", getCashfreeSecretKey()).update(`${uid}:${productId}:book:${expires}`).digest("hex").slice(0, 24);
-    if (sig !== expectedSig) {
-      res.status(403).send("Invalid download signature.");
-      return;
-    }
+    const token = String(req.query.token || "");
     const product = serverProducts.get(productId);
     if (!product) {
       res.status(404).send("Book not found.");
       return;
     }
+    const verification = verifySignedDownloadToken(token, product.id);
+    if (!verification.valid || !verification.uid) {
+      res.status(403).send("Forbidden: Valid signed download token required.");
+      return;
+    }
     const content = [
       `====================================================================`,
-      `SATYA'S EDUCATION \u2014 PROTECTED DIGITAL EDITION`,
+      `SATYA'S EDUCATION \u2014 DIGITAL EDITION`,
       `====================================================================`,
       `Title: ${product.title}`,
       `Author / Publisher: ${product.authorOrInstructor}`,
       `Category: ${product.category}`,
       `Language: ${product.language}`,
       `Format: ${product.coverType}`,
-      `Licensed To UID: ${uid}`,
+      `Licensed To Student UID: ${verification.uid}`,
       `Issued At: ${(/* @__PURE__ */ new Date()).toISOString()}`,
       `--------------------------------------------------------------------`,
-      `SYNOPSIS & SAMPLE CHAPTER CONTENT:`,
+      `SYNOPSIS & CHAPTER CONTENT:`,
       product.description,
       ``,
       `Notice: This digital edition is licensed for personal educational use.`,
-      `Permanent public URLs are disabled; this download was served via a`,
-      `short-lived 15-minute HMAC-signed token after entitlement verification.`,
       `====================================================================`
     ].join("\n");
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -1446,13 +1948,17 @@ function createApiApp() {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
       res.status(403).json({
-        error: "Forbidden: Administrator privileges (Firebase custom claim or verified admin record) required."
+        error: "Forbidden: Verified administrator privileges required."
       });
       return;
     }
-    const allOrders = Array.from(serverOrders.values()).sort(
-      (a, b) => b.createdAt.localeCompare(a.createdAt)
-    );
+    await ensureLegacyProtectedStorageTokensRevoked();
+    let allOrders = [];
+    try {
+      allOrders = await listAllOrdersFromFirestoreForAdmin();
+    } catch {
+      allOrders = [];
+    }
     const paidOrders = allOrders.filter((o) => o.paymentStatus === "paid");
     const totalSalesInr = paidOrders.reduce((acc, o) => acc + o.totalAmountInr, 0);
     res.json({
@@ -1481,6 +1987,21 @@ function createApiApp() {
       return;
     }
     const { action, payload } = req.body || {};
+    if (action === "revoke_protected_storage_tokens") {
+      try {
+        const result = await revokeProtectedStorageDownloadTokens(
+          firebase_applet_config_default.storageBucket
+        );
+        legacyStorageTokensRevoked = true;
+        res.json({ status: "ok", ...result });
+        return;
+      } catch (err) {
+        res.status(503).json({
+          error: err instanceof Error ? err.message : "Unable to revoke protected storage tokens."
+        });
+        return;
+      }
+    }
     if (action === "upsert_product") {
       const prod = payload;
       if (!prod || !prod.id || !prod.title || prod.priceInr < 0) {
@@ -1547,17 +2068,25 @@ function createApiApp() {
     }
     if (action === "update_order") {
       const { orderId, shipmentStatus, paymentStatus } = payload || {};
-      const ord = serverOrders.get(String(orderId || ""));
-      if (!ord) {
-        res.status(404).json({ error: "Order not found." });
+      try {
+        const updated = await updateOrderByAdminInFirestore({
+          orderId: String(orderId || ""),
+          shipmentStatus,
+          paymentStatus,
+          onDecrementPhysicalStock: decrementPhysicalCatalogStock
+        });
+        if (!updated) {
+          res.status(404).json({ error: "Order not found in Firestore." });
+          return;
+        }
+        res.json({ status: "ok", order: updated });
+        return;
+      } catch (err) {
+        res.status(503).json({
+          error: err instanceof Error ? err.message : "Service Account credentials required to update orders."
+        });
         return;
       }
-      if (shipmentStatus) ord.shipmentStatus = shipmentStatus;
-      if (paymentStatus) ord.paymentStatus = paymentStatus;
-      ord.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-      serverOrders.set(ord.id, ord);
-      res.json({ status: "ok", order: ord });
-      return;
     }
     if (action === "upsert_banner") {
       const banner = payload;
@@ -1570,10 +2099,6 @@ function createApiApp() {
       return;
     }
     res.status(400).json({ error: `Unknown admin action: ${String(action)}` });
-  });
-  app2.use((err, _req, res, _next) => {
-    console.error("[Serverless API Error]:", err);
-    res.status(500).json({ error: err instanceof Error ? err.message : "Internal Server Error" });
   });
   return app2;
 }

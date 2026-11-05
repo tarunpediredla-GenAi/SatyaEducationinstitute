@@ -1,8 +1,16 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
     function isAuthenticated() {
       return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function isOwner(userId) {
@@ -42,26 +50,140 @@ service cloud.firestore {
         data.createdAt is string && data.createdAt.size() <= 64;
     }
 
+    function isValidOrderRecord(data, orderId) {
+      return data.keys().hasAll([
+          'id',
+          'userId',
+          'customerName',
+          'customerEmail',
+          'totalAmountInr',
+          'paymentStatus',
+          'shipmentStatus',
+          'paymentReference',
+          'hasPhysicalItems',
+          'shippingAddressSummary',
+          'itemSummary',
+          'lineItems',
+          'entitlementsGranted',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'userId',
+          'customerName',
+          'customerEmail',
+          'totalAmountInr',
+          'paymentStatus',
+          'shipmentStatus',
+          'paymentReference',
+          'hasPhysicalItems',
+          'shippingAddressSummary',
+          'itemSummary',
+          'lineItems',
+          'entitlementsGranted',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.id is string && data.id == orderId &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 120 &&
+        data.customerEmail is string && data.customerEmail.size() >= 3 && data.customerEmail.size() <= 256 &&
+        data.totalAmountInr is number && data.totalAmountInr >= 0 && data.totalAmountInr <= 10000000 &&
+        data.paymentStatus in ['pending', 'paid', 'failed', 'refunded'] &&
+        data.shipmentStatus in ['not_applicable', 'processing', 'packed', 'shipped', 'delivered'] &&
+        data.paymentReference is string && data.paymentReference.size() <= 256 &&
+        data.hasPhysicalItems is bool &&
+        data.shippingAddressSummary is string && data.shippingAddressSummary.size() <= 600 &&
+        data.itemSummary is string && data.itemSummary.size() <= 1500 &&
+        data.lineItems is list && data.lineItems.size() >= 1 && data.lineItems.size() <= 50 &&
+        data.entitlementsGranted is bool &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidEntitlementRecord(data, entitlementId) {
+      return data.keys().hasAll([
+          'id',
+          'userId',
+          'productId',
+          'productType',
+          'orderId',
+          'downloadPath',
+          'grantedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'userId',
+          'productId',
+          'productType',
+          'orderId',
+          'downloadPath',
+          'grantedAt'
+        ]) &&
+        data.id is string && data.id == entitlementId &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.productId is string && data.productId.size() >= 1 && data.productId.size() <= 128 &&
+        data.productType in ['course', 'book', 'storybook'] &&
+        data.orderId is string && data.orderId.size() >= 1 && data.orderId.size() <= 128 &&
+        data.downloadPath is string && data.downloadPath.size() >= 1 && data.downloadPath.size() <= 512 &&
+        data.grantedAt is string && data.grantedAt.size() <= 64;
+    }
+
     match /users/{userId} {
-      allow get: if isOwner(userId) || isAdmin();
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isValidUserProfile(request.resource.data, userId) &&
+      allow create: if isValidId(userId) &&
+        isValidUserProfile(request.resource.data, userId) &&
         ((isOwner(userId) && request.resource.data.role == 'student') || isAdmin());
-      allow update: if isValidUserProfile(request.resource.data, userId) &&
+      allow update: if isValidId(userId) &&
+        isValidUserProfile(request.resource.data, userId) &&
         request.resource.data.uid == resource.data.uid &&
         request.resource.data.email == resource.data.email &&
         ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
-      allow delete: if isAdmin();
+      allow delete: if isValidId(userId) && isAdmin();
     }
 
+    // Restrict storageAssets metadata strictly to authorized administrators
     match /storageAssets/{assetId} {
-      allow get, list: if isAuthenticated();
-      allow create: if isAdmin() && isValidStorageAsset(request.resource.data, assetId);
-      allow update: if isAdmin() &&
+      allow get: if isValidId(assetId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(assetId) && isAdmin() && isValidStorageAsset(request.resource.data, assetId);
+      allow update: if isValidId(assetId) &&
+        isAdmin() &&
         isValidStorageAsset(request.resource.data, assetId) &&
         request.resource.data.id == resource.data.id &&
         request.resource.data.createdAt == resource.data.createdAt;
-      allow delete: if isAdmin();
+      allow delete: if isValidId(assetId) && isAdmin();
+    }
+
+    // Customer Orders: Customers can only read their own orders.
+    // Order creation, payment status updates, and deletions are forbidden from customer client tokens
+    // and are performed exclusively on the backend using trusted Firebase Service Account credentials.
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && ((isAuthenticated() && resource.data.userId == request.auth.uid) || isAdmin());
+      allow list: if (isAuthenticated() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow create: if isValidId(orderId) && isAdmin() && isValidOrderRecord(request.resource.data, orderId);
+      allow update: if isValidId(orderId) &&
+        isAdmin() &&
+        isValidOrderRecord(request.resource.data, orderId) &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.totalAmountInr == resource.data.totalAmountInr &&
+        request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    // Course & Book Entitlements: Customers can only read their own entitlements.
+    // Customers can NEVER create, update, or delete entitlements from client tokens;
+    // entitlements are granted exclusively by server-side service-account credentials.
+    match /entitlements/{entitlementId} {
+      allow get: if isValidId(entitlementId) && ((isAuthenticated() && resource.data.userId == request.auth.uid) || isAdmin());
+      allow list: if (isAuthenticated() && resource.data.userId == request.auth.uid) || isAdmin();
+      allow create, update: if isValidId(entitlementId) &&
+        isAdmin() &&
+        isValidEntitlementRecord(request.resource.data, entitlementId);
+      allow delete: if isValidId(entitlementId) && isAdmin();
     }
   }
 }

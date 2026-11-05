@@ -11,19 +11,26 @@ service firebase.storage {
         request.auth.token.email_verified == true;
     }
 
+    // Public covers & free preview videos: Anyone can view, ONLY verified administrators can upload/overwrite/delete
     match /public/{allPaths=**} {
       allow read: if true;
-      allow write: if isAuthenticated() && request.resource.size < 100 * 1024 * 1024;
+      allow write: if isAdmin() && (request.resource == null || request.resource.size < 100 * 1024 * 1024);
     }
 
+    // Protected course videos & digital books: Blocked from direct client read by students;
+    // ONLY verified administrators can upload, overwrite, delete, or directly read raw storage objects.
+    // Entitled students access protected content exclusively via server-verified signed URLs (/api/content/signed-url).
     match /protected/{allPaths=**} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated() && request.resource.size < 500 * 1024 * 1024;
+      allow read: if isAdmin();
+      allow write: if isAdmin() && (request.resource == null || request.resource.size < 500 * 1024 * 1024);
     }
 
+    // Per-user private files: Strictly isolated to the owning user UID or a verified administrator
     match /users/{userId}/{allPaths=**} {
-      allow read, write: if isAuthenticated() && (request.auth.uid == userId || isAdmin()) &&
-        request.resource.size < 50 * 1024 * 1024;
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAuthenticated() &&
+        (request.auth.uid == userId || isAdmin()) &&
+        (request.resource == null || request.resource.size < 50 * 1024 * 1024);
     }
   }
 }

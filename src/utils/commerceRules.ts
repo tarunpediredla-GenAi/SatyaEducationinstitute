@@ -138,7 +138,7 @@ export function canUserAccessProtectedContent(params: {
   productId: string;
   isFreePreview?: boolean;
   entitledProductIds: Set<string> | string[];
-}): { allowed: boolean; reason: string } {
+ }): { allowed: boolean; reason: string } {
   if (params.isFreePreview === true) {
     return { allowed: true, reason: 'free_preview' };
   }
@@ -188,10 +188,9 @@ export function calculateVerifiedCartSummary(params: {
     return params.catalogById[id];
   };
 
-  const verifiedItems: VerifiedLineItem[] = [];
-  let subtotalInr = 0;
-  let hasPhysicalItems = false;
-
+  // Deduplicate and merge quantities by productId so duplicate array entries
+  // cannot bypass stock limits or duplicate course items.
+  const mergedQuantitiesByProductId = new Map<string, number>();
   for (const rawItem of cartItems) {
     if (!rawItem || !isValidDocumentId(rawItem.productId)) {
       return {
@@ -220,11 +219,45 @@ export function calculateVerifiedCartSummary(params: {
       };
     }
 
-    const product = getProduct(rawItem.productId);
+    const combinedQty = (mergedQuantitiesByProductId.get(rawItem.productId) || 0) + quantity;
+    if (combinedQty > 20) {
+      return {
+        valid: false,
+        error: 'Invalid item quantity. Total quantity per product cannot exceed 20.',
+        items: [],
+        subtotalInr: 0,
+        discountInr: 0,
+        shippingInr: 0,
+        totalAmountInr: 0,
+        hasPhysicalItems: false,
+      };
+    }
+    mergedQuantitiesByProductId.set(rawItem.productId, combinedQty);
+  }
+
+  const verifiedItems: VerifiedLineItem[] = [];
+  let subtotalInr = 0;
+  let hasPhysicalItems = false;
+
+  for (const [productId, quantity] of mergedQuantitiesByProductId.entries()) {
+    const product = getProduct(productId);
     if (!product || product.status !== 'published') {
       return {
         valid: false,
-        error: `Product "${rawItem.productId}" is unavailable or unpublished.`,
+        error: `Product "${productId}" is unavailable or unpublished.`,
+        items: [],
+        subtotalInr: 0,
+        discountInr: 0,
+        shippingInr: 0,
+        totalAmountInr: 0,
+        hasPhysicalItems: false,
+      };
+    }
+
+    if (typeof product.priceInr !== 'number' || !Number.isFinite(product.priceInr) || product.priceInr <= 0) {
+      return {
+        valid: false,
+        error: `Product "${product.title}" has an invalid catalog price.`,
         items: [],
         subtotalInr: 0,
         discountInr: 0,
@@ -296,6 +329,19 @@ export function calculateVerifiedCartSummary(params: {
   const discountedSubtotal = Math.max(0, subtotalInr - discountInr);
   const shippingInr = hasPhysicalItems ? (discountedSubtotal >= 999 ? 0 : 79) : 0;
   const totalAmountInr = discountedSubtotal + shippingInr;
+
+  if (totalAmountInr <= 0) {
+    return {
+      valid: false,
+      error: 'Calculated order total must be greater than ₹0.',
+      items: verifiedItems,
+      subtotalInr,
+      discountInr,
+      shippingInr,
+      totalAmountInr: 0,
+      hasPhysicalItems,
+    };
+  }
 
   return {
     valid: true,

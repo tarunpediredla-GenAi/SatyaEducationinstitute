@@ -5,30 +5,84 @@
       "description": "Authenticated student or administrator profile.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "Firebase Auth UID" },
-        "name": { "type": "string", "description": "Display name" },
-        "email": { "type": "string", "format": "email", "description": "Email address" },
-        "phone": { "type": "string", "description": "Phone number" },
+        "uid": { "type": "string", "description": "Firebase Auth UID", "maxLength": 128 },
+        "name": { "type": "string", "description": "Display name", "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "description": "Email address", "maxLength": 256 },
+        "phone": { "type": "string", "description": "Phone number", "maxLength": 40 },
         "role": { "type": "string", "enum": ["student", "admin"], "description": "Access role" },
-        "updatedAt": { "type": "string", "description": "ISO timestamp" }
+        "updatedAt": { "type": "string", "description": "ISO timestamp", "maxLength": 64 }
       },
       "required": ["uid", "name", "email", "role", "updatedAt"]
     },
     "StorageAsset": {
       "title": "StorageAsset",
-      "description": "Metadata for files uploaded to Firebase Storage (course videos, PDFs, book covers).",
+      "description": "Admin-only metadata for files uploaded to Firebase Storage (course videos, PDFs, book covers).",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Asset identifier" },
-        "fileName": { "type": "string", "description": "Original file name" },
-        "storagePath": { "type": "string", "description": "Firebase Storage full path" },
-        "downloadUrl": { "type": "string", "description": "Firebase Storage download URL" },
-        "contentType": { "type": "string", "description": "MIME type" },
+        "id": { "type": "string", "description": "Asset identifier", "maxLength": 128 },
+        "fileName": { "type": "string", "description": "Original file name", "maxLength": 256 },
+        "storagePath": { "type": "string", "description": "Firebase Storage full path", "maxLength": 512 },
+        "downloadUrl": { "type": "string", "description": "Firebase Storage download URL", "maxLength": 2048 },
+        "contentType": { "type": "string", "description": "MIME type", "maxLength": 128 },
         "sizeBytes": { "type": "number", "description": "File size in bytes" },
-        "uploadedByUid": { "type": "string", "description": "Uploader UID" },
-        "createdAt": { "type": "string", "description": "ISO upload timestamp" }
+        "uploadedByUid": { "type": "string", "description": "Uploader UID", "maxLength": 128 },
+        "createdAt": { "type": "string", "description": "ISO upload timestamp", "maxLength": 64 }
       },
       "required": ["id", "fileName", "storagePath", "downloadUrl", "contentType", "sizeBytes", "uploadedByUid", "createdAt"]
+    },
+    "CustomerOrder": {
+      "title": "CustomerOrder",
+      "description": "Customer order persisted in Firestore. Created as pending; updated to paid exclusively via server-side service-account credentials after Cashfree verification.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique Order ID", "maxLength": 128 },
+        "userId": { "type": "string", "description": "Customer Firebase UID", "maxLength": 128 },
+        "customerName": { "type": "string", "description": "Customer full name", "maxLength": 120 },
+        "customerEmail": { "type": "string", "format": "email", "description": "Customer email", "maxLength": 256 },
+        "totalAmountInr": { "type": "number", "description": "Verified order total in INR" },
+        "paymentStatus": { "type": "string", "enum": ["pending", "paid", "failed", "refunded"], "description": "Server-verified payment state" },
+        "shipmentStatus": { "type": "string", "enum": ["not_applicable", "processing", "packed", "shipped", "delivered"], "description": "Physical book fulfillment state" },
+        "paymentReference": { "type": "string", "description": "Cashfree payment or order reference", "maxLength": 256 },
+        "hasPhysicalItems": { "type": "boolean", "description": "Whether order includes physical books" },
+        "shippingAddressSummary": { "type": "string", "description": "Formatted delivery address", "maxLength": 600 },
+        "itemSummary": { "type": "string", "description": "Human-readable summary of purchased items", "maxLength": 1500 },
+        "lineItems": { "type": "array", "description": "Bounded list of purchased catalog items" },
+        "entitlementsGranted": { "type": "boolean", "description": "Idempotency flag indicating whether entitlements have been unlocked" },
+        "createdAt": { "type": "string", "description": "ISO creation timestamp", "maxLength": 64 },
+        "updatedAt": { "type": "string", "description": "ISO update timestamp", "maxLength": 64 }
+      },
+      "required": [
+        "id",
+        "userId",
+        "customerName",
+        "customerEmail",
+        "totalAmountInr",
+        "paymentStatus",
+        "shipmentStatus",
+        "paymentReference",
+        "hasPhysicalItems",
+        "shippingAddressSummary",
+        "itemSummary",
+        "lineItems",
+        "entitlementsGranted",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "CourseBookEntitlement": {
+      "title": "CourseBookEntitlement",
+      "description": "Server-granted entitlement unlocking a purchased course or digital book for a specific user. Written only by server-side service-account credentials or verified admins.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Deterministic entitlement ID ({userId}_{productId})", "maxLength": 128 },
+        "userId": { "type": "string", "description": "Entitled customer Firebase UID", "maxLength": 128 },
+        "productId": { "type": "string", "description": "Unlocked catalog product ID", "maxLength": 128 },
+        "productType": { "type": "string", "enum": ["course", "book", "storybook"], "description": "Unlocked item type" },
+        "orderId": { "type": "string", "description": "Verified paid order ID", "maxLength": 128 },
+        "downloadPath": { "type": "string", "description": "Protected storage path", "maxLength": 512 },
+        "grantedAt": { "type": "string", "description": "ISO timestamp when unlocked", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "productId", "productType", "orderId", "downloadPath", "grantedAt"]
     }
   },
   "firestore": {
@@ -38,7 +92,15 @@
     },
     "/storageAssets/{assetId}": {
       "schema": { "$ref": "#/entities/StorageAsset" },
-      "description": "Uploaded Firebase Storage media assets managed by administrators."
+      "description": "Uploaded Firebase Storage media assets restricted to administrators."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/CustomerOrder" },
+      "description": "Persistent customer orders. Updates to paid status are performed exclusively by server-side service-account credentials."
+    },
+    "/entitlements/{entitlementId}": {
+      "schema": { "$ref": "#/entities/CourseBookEntitlement" },
+      "description": "Persistent course and digital book access entitlements written exclusively by server-side service-account credentials."
     }
   }
 }
