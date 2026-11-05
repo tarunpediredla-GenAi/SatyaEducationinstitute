@@ -4,6 +4,8 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { auth } from './firebase';
 import {
   Search,
   ShoppingBag,
@@ -33,6 +35,7 @@ import {
   Phone,
 } from 'lucide-react';
 import {
+  BOOTSTRAPPED_ADMIN_EMAIL,
   BUSINESS_COMPLIANCE_INFO,
   type CatalogProduct,
   type CourseLesson,
@@ -133,16 +136,16 @@ export default function App() {
     }, 3500);
   };
 
-  const handleSignOut = () => {
-    setUser(null);
+  const handleSignOut = async () => {
     try {
-      localStorage.removeItem('satya_user_session');
+      await signOut(auth);
+      setUser(null);
+      showToast('Signed out successfully.');
+      if (activeView === 'dashboard' || activeView === 'admin') {
+        setActiveView('home');
+      }
     } catch {
-      // ignore
-    }
-    showToast('Signed out successfully.');
-    if (activeView === 'dashboard' || activeView === 'admin') {
-      setActiveView('home');
+      showToast('Could not sign out. Please try again.');
     }
   };
 
@@ -203,17 +206,38 @@ export default function App() {
 
   useEffect(() => {
     fetchCatalogFromServer();
-    try {
-      const saved = localStorage.getItem('satya_user_session');
-      if (saved) {
-        const parsed = JSON.parse(saved) as ActiveUserSession;
-        if (parsed && parsed.uid && parsed.email) {
-          setUser(parsed);
-        }
+    let active = true;
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser) {
+        if (active) setUser(null);
+        return;
       }
-    } catch {
-      // ignore
-    }
+      try {
+        const token = await firebaseUser.getIdTokenResult();
+        const role: 'student' | 'admin' =
+          token.claims.admin === true ||
+          (firebaseUser.emailVerified &&
+            firebaseUser.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase())
+            ? 'admin'
+            : 'student';
+        if (active) {
+          setUser({
+            uid: firebaseUser.uid,
+            name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Student',
+            email: firebaseUser.email || '',
+            phone: firebaseUser.phoneNumber || '',
+            emailVerified: firebaseUser.emailVerified,
+            role,
+          });
+        }
+      } catch {
+        if (active) setUser(null);
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -1824,11 +1848,6 @@ export default function App() {
         onClose={() => setAuthModalOpen(false)}
         onSessionAuthenticated={(session) => {
           setUser(session);
-          try {
-            localStorage.setItem('satya_user_session', JSON.stringify(session));
-          } catch {
-            // ignore
-          }
           showToast(`Signed in as ${session.name} (${session.role})`);
         }}
       />
