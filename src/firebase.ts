@@ -125,7 +125,9 @@ export interface UploadedStorageAsset {
   createdAt: string;
 }
 
-export function uploadFileToFirebaseStorage(params: {
+const SUPABASE_FREE_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+
+export async function uploadFileToFirebaseStorage(params: {
   file: File;
   folder: 'protected/courses' | 'protected/books' | 'public/covers' | 'public/previews';
   subPath?: string;
@@ -141,6 +143,92 @@ export function uploadFileToFirebaseStorage(params: {
     : `${folder}/${timestamp}_${safeName}`;
 
   const isProtectedFolder = folder.startsWith('protected/');
+
+  if (isProtectedFolder && file.size > SUPABASE_FREE_MAX_BYTES) {
+    throw new Error(
+      `File "${file.name}" (${(file.size / (1024 * 1024)).toFixed(
+        1
+      )} MB) exceeds the 50 MB Supabase Free plan limit. Please split course recordings into 15–25 minute lesson modules or HLS segments under 50 MB each.`
+    );
+  }
+
+  // For protected course recordings and digital books, upload to the private
+  // `protected-media` Supabase Storage bucket via a server-verified signed upload URL
+  if (isProtectedFolder && isAdmin && auth.currentUser) {
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const signRes = await fetch('/api/admin/storage/signed-upload-url', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          objectPath: fullStoragePath,
+          fileSizeBytes: file.size,
+        }),
+      });
+
+      if (signRes.ok) {
+        const { signedUploadUrl, objectPath } = (await signRes.json()) as {
+          signedUploadUrl: string;
+          objectPath: string;
+        };
+
+        await new Promise<void>((resolveUpload, rejectUpload) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('PUT', signedUploadUrl, true);
+          xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+          xhr.upload.onprogress = (evt) => {
+            if (onProgress && evt.lengthComputable && evt.total > 0) {
+              onProgress(Math.round((evt.loaded / evt.total) * 100));
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolveUpload();
+            } else {
+              rejectUpload(
+                new Error(`Supabase protected-media upload failed (${xhr.status}).`)
+              );
+            }
+          };
+          xhr.onerror = () =>
+            rejectUpload(new Error('Network error uploading to Supabase protected-media.'));
+          xhr.send(file);
+        });
+
+        const assetId = `asset_${timestamp}`;
+        const assetRecord: UploadedStorageAsset = {
+          id: assetId,
+          fileName: file.name.slice(0, 250),
+          storagePath: objectPath.slice(0, 500),
+          downloadUrl: objectPath.slice(0, 2000),
+          contentType: (file.type || 'application/octet-stream').slice(0, 120),
+          sizeBytes: file.size,
+          uploadedByUid,
+          createdAt: new Date().toISOString(),
+        };
+
+        try {
+          await setDoc(doc(db, 'storageAssets', assetId), assetRecord);
+        } catch {
+          // Metadata write is optional
+        }
+
+        return assetRecord;
+      }
+    } catch (supabaseUploadErr) {
+      if (
+        supabaseUploadErr instanceof Error &&
+        supabaseUploadErr.message.includes('50 MB')
+      ) {
+        throw supabaseUploadErr;
+      }
+      // Fall through to Firebase Storage if Supabase signed upload is not reachable in local preview
+    }
+  }
+
   const fileRef = storageRef(storage, fullStoragePath);
   const uploadTask = uploadBytesResumable(fileRef, file, {
     contentType: file.type || 'application/octet-stream',
@@ -162,7 +250,7 @@ export function uploadFileToFirebaseStorage(params: {
       },
       async () => {
         try {
-          // Security Fix #6: Never mint public capability download tokens (?token=...) for
+          // Never mint public capability download tokens (?token=...) for
           // protected course recordings or digital books; store the canonical storagePath
           // so playback/downloads are always gated by server-side entitlement verification.
           const resolvedUrlOrPath = isProtectedFolder

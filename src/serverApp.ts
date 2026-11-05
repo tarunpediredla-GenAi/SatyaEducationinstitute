@@ -12,19 +12,24 @@ import {
   type CourseLesson,
 } from './utils/commerceRules';
 import {
-  createGcsV4SignedReadUrl,
-  createPendingOrderInFirestore,
-  fulfillPaidOrderAtomicallyInFirestore,
-  getOrderFromFirestore,
-  listAllOrdersFromFirestoreForAdmin,
-  listUserEntitledProductIdsFromFirestore,
-  listUserOrdersAndEntitlementsFromFirestore,
-  markOrderFailedInFirestore,
-  revokeProtectedStorageDownloadTokens,
-  updateOrderByAdminInFirestore,
+  SUPABASE_FREE_PLAN_MAX_FILE_BYTES,
+  SUPABASE_PROTECTED_MEDIA_BUCKET,
+  createPendingOrderInSupabase,
+  createSupabaseSignedStorageUrl,
+  createSupabaseSignedUploadUrlForAdmin,
+  fulfillPaidOrderAtomicallyInSupabase,
+  getOrderFromSupabase,
+  getSupabaseServerConfig,
+  listAllOrdersFromSupabaseForAdmin,
+  listUserEntitledProductIdsFromSupabase,
+  listUserOrdersAndEntitlementsFromSupabase,
+  markOrderFailedOrCancelledInSupabase,
+  saveCashfreeOrderIdInSupabase,
+  updateOrderByAdminInSupabase,
+  validateProtectedStorageFilePath,
   type ServerEntitlementRecord,
   type ServerOrderRecord,
-} from './utils/firestoreServerStore';
+} from './utils/supabaseServerStore';
 import {
   INITIAL_BANNERS,
   INITIAL_CATEGORIES,
@@ -63,7 +68,6 @@ const serverBanners = new Map<string, PromotionalBanner>(
 );
 
 const serverAdminUids = new Set<string>();
-let legacyStorageTokensRevoked = false;
 
 export interface VerifiedServerAuthContext extends AuthTokenContext {
   idToken: string;
@@ -77,7 +81,7 @@ const verifiedTokenCache = new Map<
 
 function getDownloadSigningSecret(): string {
   const configuredSecret =
-    (process.env.FIREBASE_PRIVATE_KEY || '').trim() ||
+    (process.env.SUPABASE_SECRET_KEY || '').trim() ||
     (process.env.CASHFREE_SECRET_KEY || '').trim();
   if (configuredSecret) {
     return configuredSecret;
@@ -149,48 +153,46 @@ function verifySignedDownloadToken(
 }
 
 /**
- * Strips any Firebase Storage `?token=...` query parameter from a storage URL
- * or converts a Firebase Storage URL into its canonical object path so old
- * capability tokens cannot bypass paid-content protection.
+ * Extracts a canonical private storage file path (`protected/courses/...` or `protected/books/...`)
+ * from a server catalog path or legacy URL, stripping any query tokens and validating that it
+ * refers to an actual file path (never an arbitrary or folder-only path).
  */
-function extractProtectedStorageObjectPath(pathOrUrl: string): string | null {
-  const trimmed = pathOrUrl.trim();
+function resolveVerifiedProtectedFilePath(rawServerPathOrUrl: string): string | null {
+  const trimmed = String(rawServerPathOrUrl || '').trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith('protected/') || trimmed.startsWith('public/')) {
-    return trimmed;
+
+  const directValidated = validateProtectedStorageFilePath(trimmed);
+  if (directValidated) {
+    return directValidated;
   }
+
   try {
     const parsed = new URL(trimmed);
     if (parsed.hostname.includes('firebasestorage.googleapis.com')) {
       const match = parsed.pathname.match(/\/o\/(.+)$/);
       if (match?.[1]) {
-        return decodeURIComponent(match[1]);
+        return validateProtectedStorageFilePath(decodeURIComponent(match[1]));
+      }
+    }
+    if (parsed.pathname.includes('/storage/v1/object/')) {
+      const match = parsed.pathname.match(
+        /\/storage\/v1\/object\/(?:sign|public|authenticated)\/[^/]+\/(.+)$/
+      );
+      if (match?.[1]) {
+        return validateProtectedStorageFilePath(decodeURIComponent(match[1]));
       }
     }
   } catch {
     // Not a URL
   }
-  return null;
-}
 
-/**
- * Automatically revokes any pre-existing `firebaseStorageDownloadTokens` on objects
- * inside `protected/` once Service Account credentials are active.
- */
-async function ensureLegacyProtectedStorageTokensRevoked(): Promise<void> {
-  if (legacyStorageTokensRevoked || !firebaseConfig.storageBucket) return;
-  try {
-    await revokeProtectedStorageDownloadTokens(firebaseConfig.storageBucket);
-    legacyStorageTokensRevoked = true;
-  } catch {
-    // Will retry when Service Account credentials are configured
-  }
+  return null;
 }
 
 /**
  * Verifies the Firebase Authentication ID token against Google Identity Toolkit
  * for project `famous-campaign-mcbh2`. Never trusts unverified client headers,
- * body fields, or query parameters.
+ * body fields, or query parameters. Requires zero service-account private keys.
  */
 async function resolveServerAuthContext(
   req: express.Request
@@ -299,13 +301,22 @@ function decrementPhysicalCatalogStock(productId: string, quantity: number): voi
 }
 
 /**
- * Independently queries Cashfree PG v3 `/orders/{orderId}` to verify payment status.
- * Never trusts client-supplied status flags.
+ * Independently queries Cashfree PG v3 `/orders/{orderId}` and `/orders/{orderId}/payments`
+ * to verify:
+ * 1. Merchant `order_id` matches `order.id`
+ * 2. Cashfree `cf_order_id` matches `order.cashfreeOrderId` stored in `public.orders`
+ * 3. `order_status === 'PAID'`
+ * 4. Exact amount in paise (`Math.round(cfOrder.order_amount * 100) === order.totalAmountPaise`)
+ * 5. `order_currency === 'INR'`
+ * 6. A real `cf_payment_id` from a `payment_status === 'SUCCESS'` payment record (never invented)
  */
 async function verifyOrderWithCashfreeServer(order: ServerOrderRecord): Promise<{
   verifiedPaid: boolean;
   cashfreeOrderStatus: string;
-  paymentReference: string;
+  cashfreeOrderId: string;
+  cashfreePaymentId: string;
+  verifiedAmountPaise: number;
+  verifiedCurrency: string;
   error?: string;
 }> {
   const cfConfig = getCashfreeConfig();
@@ -313,9 +324,26 @@ async function verifyOrderWithCashfreeServer(order: ServerOrderRecord): Promise<
     return {
       verifiedPaid: false,
       cashfreeOrderStatus: 'UNCONFIGURED',
-      paymentReference: '',
+      cashfreeOrderId: '',
+      cashfreePaymentId: '',
+      verifiedAmountPaise: 0,
+      verifiedCurrency: '',
       error:
         'Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server.',
+    };
+  }
+
+  const storedCashfreeOrderId = String(order.cashfreeOrderId || '').trim();
+  if (!storedCashfreeOrderId) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: 'MISSING_CF_ORDER_ID',
+      cashfreeOrderId: '',
+      cashfreePaymentId: '',
+      verifiedAmountPaise: 0,
+      verifiedCurrency: '',
+      error:
+        'Order does not have a registered Cashfree cf_order_id in Supabase. Checkout session was not initialized properly.',
     };
   }
 
@@ -337,7 +365,10 @@ async function verifyOrderWithCashfreeServer(order: ServerOrderRecord): Promise<
     return {
       verifiedPaid: false,
       cashfreeOrderStatus: 'LOOKUP_FAILED',
-      paymentReference: '',
+      cashfreeOrderId: '',
+      cashfreePaymentId: '',
+      verifiedAmountPaise: 0,
+      verifiedCurrency: '',
       error: `Cashfree order verification request failed (${cfRes.status}): ${errBody.slice(0, 200)}`,
     };
   }
@@ -351,57 +382,172 @@ async function verifyOrderWithCashfreeServer(order: ServerOrderRecord): Promise<
   };
 
   const cfStatus = String(cfOrder.order_status || 'ACTIVE').toUpperCase();
-  const amountMatches =
-    typeof cfOrder.order_amount === 'number' &&
-    Math.abs(cfOrder.order_amount - order.totalAmountInr) < 0.01;
-  const currencyMatches = String(cfOrder.order_currency || 'INR').toUpperCase() === 'INR';
+  const returnedMerchantOrderId = String(cfOrder.order_id || '').trim();
+  const returnedCashfreeOrderId = String(cfOrder.cf_order_id ?? '').trim();
+  const returnedCurrency = String(cfOrder.order_currency || '').trim().toUpperCase();
+  const returnedAmountPaise =
+    typeof cfOrder.order_amount === 'number' && Number.isFinite(cfOrder.order_amount)
+      ? Math.round(cfOrder.order_amount * 100)
+      : -1;
 
-  if (cfStatus === 'PAID' && amountMatches && currencyMatches) {
-    let paymentRef = String(cfOrder.cf_order_id || `CF_${order.id}`);
-    try {
-      const paymentsRes = await fetch(
-        `${cfConfig.baseUrl}/orders/${encodeURIComponent(order.id)}/payments`,
-        {
-          method: 'GET',
-          headers: {
-            'x-client-id': cfConfig.appId,
-            'x-client-secret': cfConfig.secretKey,
-            'x-api-version': cfConfig.apiVersion,
-            Accept: 'application/json',
-          },
-        }
-      );
-      if (paymentsRes.ok) {
-        const paymentsList = (await paymentsRes.json()) as Array<{
-          cf_payment_id?: string | number;
-          payment_status?: string;
-        }>;
-        const successPayment = Array.isArray(paymentsList)
-          ? paymentsList.find((p) => String(p.payment_status).toUpperCase() === 'SUCCESS')
-          : undefined;
-        if (successPayment?.cf_payment_id) {
-          paymentRef = `CF_PAY_${successPayment.cf_payment_id}`;
-        }
-      }
-    } catch {
-      // Keep cf_order_id reference if payment list lookup is skipped
-    }
-
+  if (returnedMerchantOrderId !== order.id) {
     return {
-      verifiedPaid: true,
-      cashfreeOrderStatus: 'PAID',
-      paymentReference: paymentRef,
+      verifiedPaid: false,
+      cashfreeOrderStatus: cfStatus,
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: '',
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: `Merchant order_id mismatch from Cashfree: expected ${order.id}, received ${returnedMerchantOrderId}.`,
+    };
+  }
+
+  if (!returnedCashfreeOrderId || returnedCashfreeOrderId !== storedCashfreeOrderId) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: cfStatus,
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: '',
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: `Cashfree cf_order_id mismatch: expected ${storedCashfreeOrderId}, received ${returnedCashfreeOrderId || 'empty'}.`,
+    };
+  }
+
+  const amountMatches = returnedAmountPaise === order.totalAmountPaise;
+  const currencyMatches = returnedCurrency === 'INR';
+
+  if (cfStatus !== 'PAID' || !amountMatches || !currencyMatches) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: cfStatus,
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: '',
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error:
+        cfStatus === 'PAID' && (!amountMatches || !currencyMatches)
+          ? 'Cashfree order amount or currency mismatch.'
+          : `Payment is not completed yet (Cashfree status: ${cfStatus}).`,
+    };
+  }
+
+  // Independently verify the payment transaction list to obtain the real cf_payment_id
+  const paymentsRes = await fetch(
+    `${cfConfig.baseUrl}/orders/${encodeURIComponent(order.id)}/payments`,
+    {
+      method: 'GET',
+      headers: {
+        'x-client-id': cfConfig.appId,
+        'x-client-secret': cfConfig.secretKey,
+        'x-api-version': cfConfig.apiVersion,
+        Accept: 'application/json',
+      },
+    }
+  );
+
+  if (!paymentsRes.ok) {
+    const errText = await paymentsRes.text();
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: 'PAYMENTS_LOOKUP_FAILED',
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: '',
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: `Cashfree payments verification request failed (${paymentsRes.status}): ${errText.slice(
+        0,
+        200
+      )}`,
+    };
+  }
+
+  const paymentsList = (await paymentsRes.json()) as Array<{
+    cf_payment_id?: string | number;
+    order_id?: string;
+    payment_status?: string;
+    payment_amount?: number;
+    payment_currency?: string;
+  }>;
+
+  const successPayment = Array.isArray(paymentsList)
+    ? paymentsList.find(
+        (p) =>
+          String(p?.payment_status || '').toUpperCase() === 'SUCCESS' &&
+          p?.cf_payment_id !== undefined &&
+          p?.cf_payment_id !== null &&
+          String(p.cf_payment_id).trim().length > 0
+      )
+    : undefined;
+
+  if (!successPayment) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: 'MISSING_SUCCESS_PAYMENT',
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: '',
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error:
+        'Cashfree did not return a SUCCESS payment transaction with a valid cf_payment_id.',
+    };
+  }
+
+  const realCashfreePaymentId = String(successPayment.cf_payment_id).trim();
+
+  if (
+    successPayment.order_id &&
+    String(successPayment.order_id).trim() !== order.id
+  ) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: 'PAYMENT_ORDER_MISMATCH',
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: realCashfreePaymentId,
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: 'Cashfree payment record order_id does not match the merchant order ID.',
+    };
+  }
+
+  if (
+    typeof successPayment.payment_amount === 'number' &&
+    Number.isFinite(successPayment.payment_amount) &&
+    Math.round(successPayment.payment_amount * 100) !== order.totalAmountPaise
+  ) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: 'PAYMENT_AMOUNT_MISMATCH',
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: realCashfreePaymentId,
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: 'Cashfree payment transaction amount does not match the order total.',
+    };
+  }
+
+  if (
+    successPayment.payment_currency &&
+    String(successPayment.payment_currency).trim().toUpperCase() !== 'INR'
+  ) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: 'PAYMENT_CURRENCY_MISMATCH',
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: realCashfreePaymentId,
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: 'Cashfree payment transaction currency is not INR.',
     };
   }
 
   return {
-    verifiedPaid: false,
-    cashfreeOrderStatus: cfStatus,
-    paymentReference: '',
-    error:
-      cfStatus === 'PAID' && (!amountMatches || !currencyMatches)
-        ? 'Cashfree order amount or currency mismatch.'
-        : `Payment is not completed yet (Cashfree status: ${cfStatus}).`,
+    verifiedPaid: true,
+    cashfreeOrderStatus: 'PAID',
+    cashfreeOrderId: returnedCashfreeOrderId,
+    cashfreePaymentId: realCashfreePaymentId,
+    verifiedAmountPaise: returnedAmountPaise,
+    verifiedCurrency: 'INR',
   };
 }
 
@@ -484,7 +630,8 @@ export function createApiApp() {
     res.json(result);
   });
 
-  // 3. Create Pending Order in Firestore & Initialize Cashfree Session (NEVER marks order paid on creation)
+  // 3. Create Pending Order in Supabase & Initialize Cashfree Session
+  // Saves pending order first, then saves Cashfree's real cf_order_id before returning session
   const handleCreatePendingCashfreeOrder = async (
     req: express.Request,
     res: express.Response
@@ -547,6 +694,7 @@ export function createApiApp() {
       .join(' · ');
 
     const nowIso = new Date().toISOString();
+    const totalAmountPaise = Math.round(verifiedCart.totalAmountInr * 100);
 
     // Every new order MUST start with paymentStatus: 'pending' and entitlementsGranted: false
     const draftOrder: ServerOrderRecord = {
@@ -555,8 +703,12 @@ export function createApiApp() {
       customerName: String(customerName || authCtx.email || 'Student').slice(0, 120),
       customerEmail: String(authCtx.email || 'student@example.com').slice(0, 256),
       totalAmountInr: verifiedCart.totalAmountInr,
+      totalAmountPaise,
+      currency: 'INR',
       paymentStatus: 'pending',
       shipmentStatus: verifiedCart.hasPhysicalItems ? 'processing' : 'not_applicable',
+      cashfreeOrderId: '',
+      cashfreePaymentId: '',
       paymentReference: '',
       hasPhysicalItems: verifiedCart.hasPhysicalItems,
       shippingAddressSummary: addressSummary.slice(0, 600),
@@ -576,13 +728,13 @@ export function createApiApp() {
 
     let pendingOrder: ServerOrderRecord;
     try {
-      pendingOrder = await createPendingOrderInFirestore(draftOrder);
+      pendingOrder = await createPendingOrderInSupabase(draftOrder);
     } catch (err) {
       res.status(503).json({
         error:
           err instanceof Error
             ? err.message
-            : 'Unable to save pending order in Firestore.',
+            : 'Unable to save pending order in Supabase.',
       });
       return;
     }
@@ -591,7 +743,7 @@ export function createApiApp() {
     if (!cfConfig.configured) {
       res.status(503).json({
         error:
-          'Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server. Order has been saved in Firestore with status "pending" and will not be marked paid until verified with Cashfree.',
+          'Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server. Order has been saved in Supabase with status "pending" and will not be marked paid until verified with Cashfree.',
         order: pendingOrder,
       });
       return;
@@ -635,14 +787,46 @@ export function createApiApp() {
       const cfData = (await cfCreateRes.json()) as {
         payment_session_id?: string;
         cf_order_id?: string | number;
+        order_id?: string;
         message?: string;
       };
 
-      if (!cfCreateRes.ok || !cfData.payment_session_id) {
+      const paymentSessionId = String(cfData.payment_session_id || '').trim();
+      const realCashfreeOrderId =
+        cfData.cf_order_id !== undefined && cfData.cf_order_id !== null
+          ? String(cfData.cf_order_id).trim()
+          : '';
+
+      if (!cfCreateRes.ok || !paymentSessionId || !realCashfreeOrderId) {
         res.status(502).json({
           error:
             cfData.message ||
-            'Failed to initialize payment session with Cashfree Payment Gateway.',
+            'Failed to initialize payment session with Cashfree Payment Gateway (missing payment_session_id or cf_order_id).',
+          order: pendingOrder,
+        });
+        return;
+      }
+
+      if (cfData.order_id && String(cfData.order_id).trim() !== pendingOrder.id) {
+        res.status(502).json({
+          error: 'Cashfree returned a mismatched merchant order_id.',
+          order: pendingOrder,
+        });
+        return;
+      }
+
+      // Persist the real Cashfree cf_order_id in Supabase BEFORE returning paymentSessionId
+      try {
+        pendingOrder = await saveCashfreeOrderIdInSupabase({
+          orderId: pendingOrder.id,
+          cashfreeOrderId: realCashfreeOrderId,
+        });
+      } catch (saveErr) {
+        res.status(503).json({
+          error:
+            saveErr instanceof Error
+              ? saveErr.message
+              : 'Failed to store Cashfree cf_order_id in Supabase before checkout.',
           order: pendingOrder,
         });
         return;
@@ -650,7 +834,7 @@ export function createApiApp() {
 
       res.json({
         order: pendingOrder,
-        paymentSessionId: cfData.payment_session_id,
+        paymentSessionId,
         cashfreeMode: cfConfig.mode,
       });
     } catch (err) {
@@ -667,7 +851,7 @@ export function createApiApp() {
   app.post('/api/payments/cashfree/create-order', handleCreatePendingCashfreeOrder);
   app.post('/api/orders/create', handleCreatePendingCashfreeOrder);
 
-  // 3B. Verify Cashfree Payment Status Before Updating Firestore Order to "paid" or Unlocking Content
+  // 3B. Verify Cashfree Payment Status Before Calling Supabase `fulfill_paid_order`
   app.post('/api/payments/cashfree/verify', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
@@ -681,26 +865,25 @@ export function createApiApp() {
       return;
     }
 
-    let fetched: { order: ServerOrderRecord; updateTime?: string } | null;
+    let order: ServerOrderRecord | null;
     try {
-      fetched = await getOrderFromFirestore(orderId);
+      order = await getOrderFromSupabase(orderId);
     } catch (err) {
       res.status(503).json({
         verified: false,
         error:
           err instanceof Error
             ? err.message
-            : 'Privileged Firestore credentials are required to verify orders.',
+            : 'Server-side Supabase credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are required to verify orders.',
       });
       return;
     }
 
-    if (!fetched) {
-      res.status(404).json({ error: 'Order not found in Firestore.' });
+    if (!order) {
+      res.status(404).json({ error: 'Order not found in Supabase.' });
       return;
     }
 
-    const { order } = fetched;
     const isCallerAdmin = canUserPerformAdminOperation(authCtx);
 
     // Ensure only the order owner or a verified admin can verify/inspect this order
@@ -709,16 +892,23 @@ export function createApiApp() {
       return;
     }
 
-    // Idempotent return if already verified and unlocked in Firestore
+    // Refuse to reactivate a refunded or cancelled order
+    if (order.paymentStatus === 'refunded' || order.paymentStatus === 'cancelled') {
+      res.status(409).json({
+        verified: false,
+        error: `Order ${order.id} has status "${order.paymentStatus}" and cannot be fulfilled or reactivated.`,
+        order,
+      });
+      return;
+    }
+
+    // Idempotent return if already verified and unlocked in Supabase
     if (order.paymentStatus === 'paid' && order.entitlementsGranted) {
-      const { entitlements } = await listUserOrdersAndEntitlementsFromFirestore(
-        order.userId,
-        authCtx.idToken
-      );
+      const { entitlements } = await listUserOrdersAndEntitlementsFromSupabase(order.userId);
       res.json({
         verified: true,
         order,
-        entitlements: entitlements.filter((e) => e.orderId === order.id),
+        entitlements: entitlements.filter((e) => e.orderId === order!.id),
         alreadyFulfilled: true,
       });
       return;
@@ -727,9 +917,12 @@ export function createApiApp() {
     const verification = await verifyOrderWithCashfreeServer(order);
     if (verification.verifiedPaid) {
       try {
-        const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
+        const fulfilled = await fulfillPaidOrderAtomicallyInSupabase({
           orderId: order.id,
-          paymentReference: verification.paymentReference,
+          cashfreeOrderId: verification.cashfreeOrderId,
+          cashfreePaymentId: verification.cashfreePaymentId,
+          verifiedAmountPaise: verification.verifiedAmountPaise,
+          verifiedCurrency: verification.verifiedCurrency,
           onDecrementPhysicalStock: decrementPhysicalCatalogStock,
         });
 
@@ -746,7 +939,7 @@ export function createApiApp() {
           error:
             err instanceof Error
               ? err.message
-              : 'Failed to persist verified payment and entitlements in Firestore.',
+              : 'Failed to persist verified payment and entitlements in Supabase.',
         });
         return;
       }
@@ -757,7 +950,9 @@ export function createApiApp() {
       verification.cashfreeOrderStatus === 'EXPIRED' ||
       verification.cashfreeOrderStatus === 'TERMINATED'
     ) {
-      updatedOrder = await markOrderFailedInFirestore(order);
+      updatedOrder = await markOrderFailedOrCancelledInSupabase(order, 'failed');
+    } else if (verification.cashfreeOrderStatus === 'USER_DROPPED') {
+      updatedOrder = await markOrderFailedOrCancelledInSupabase(order, 'cancelled');
     }
 
     res.status(402).json({
@@ -770,7 +965,7 @@ export function createApiApp() {
     });
   });
 
-  // 3C. Cashfree Server-to-Server Webhook Endpoint (HMAC-SHA256 Signature Verified + Service Account Fulfillment)
+  // 3C. Cashfree Server-to-Server Webhook Endpoint (HMAC-SHA256 Signature Verified + Supabase Fulfillment)
   app.post(
     '/api/payments/cashfree/webhook',
     async (req: express.Request & { rawBody?: string }, res) => {
@@ -803,46 +998,74 @@ export function createApiApp() {
       }
 
       const orderId = String(req.body?.data?.order?.order_id || '').trim();
-      let fetched: { order: ServerOrderRecord; updateTime?: string } | null;
+      if (!orderId) {
+        res.status(400).json({ error: 'Missing order_id in Cashfree webhook payload.' });
+        return;
+      }
+
+      let order: ServerOrderRecord | null;
       try {
-        fetched = await getOrderFromFirestore(orderId);
+        order = await getOrderFromSupabase(orderId);
       } catch (err) {
         res.status(503).json({
           error:
             err instanceof Error
               ? err.message
-              : 'Firebase Service Account credentials are required to process webhooks.',
+              : 'Server-side Supabase credentials are required to process webhooks.',
         });
         return;
       }
 
-      if (!fetched) {
-        res.status(404).json({ error: 'Order not found in Firestore.' });
+      if (!order) {
+        res.status(404).json({ error: 'Order not found in Supabase.' });
         return;
       }
 
-      const { order } = fetched;
-      const verification = await verifyOrderWithCashfreeServer(order);
-      if (verification.verifiedPaid) {
-        const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
-          orderId: order.id,
-          paymentReference: verification.paymentReference,
-          onDecrementPhysicalStock: decrementPhysicalCatalogStock,
-        });
+      // Never reactivate a refunded or cancelled order from a delayed webhook
+      if (order.paymentStatus === 'refunded' || order.paymentStatus === 'cancelled') {
         res.json({
           received: true,
-          orderId: fulfilled.order.id,
-          paymentStatus: fulfilled.order.paymentStatus,
-          alreadyFulfilled: fulfilled.alreadyFulfilled,
+          orderId: order.id,
+          paymentStatus: order.paymentStatus,
+          ignored: true,
         });
         return;
+      }
+
+      const verification = await verifyOrderWithCashfreeServer(order);
+      if (verification.verifiedPaid) {
+        try {
+          const fulfilled = await fulfillPaidOrderAtomicallyInSupabase({
+            orderId: order.id,
+            cashfreeOrderId: verification.cashfreeOrderId,
+            cashfreePaymentId: verification.cashfreePaymentId,
+            verifiedAmountPaise: verification.verifiedAmountPaise,
+            verifiedCurrency: verification.verifiedCurrency,
+            onDecrementPhysicalStock: decrementPhysicalCatalogStock,
+          });
+          res.json({
+            received: true,
+            orderId: fulfilled.order.id,
+            paymentStatus: fulfilled.order.paymentStatus,
+            alreadyFulfilled: fulfilled.alreadyFulfilled,
+          });
+          return;
+        } catch (err) {
+          res.status(503).json({
+            error:
+              err instanceof Error
+                ? err.message
+                : 'Failed to fulfill verified webhook order in Supabase.',
+          });
+          return;
+        }
       }
 
       res.json({ received: true, orderId: order.id, paymentStatus: order.paymentStatus });
     }
   );
 
-  // 4. User Orders & Entitlements Endpoint (Strictly isolated to authenticated user's UID in Firestore)
+  // 4. User Orders & Entitlements Endpoint (Strictly isolated to authenticated user's UID in Supabase)
   app.get('/api/user/library', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
@@ -850,18 +1073,26 @@ export function createApiApp() {
       return;
     }
 
-    const { orders, entitlements } = await listUserOrdersAndEntitlementsFromFirestore(
-      authCtx.uid,
-      authCtx.idToken
-    );
+    try {
+      const { orders, entitlements } = await listUserOrdersAndEntitlementsFromSupabase(
+        authCtx.uid
+      );
 
-    res.json({
-      orders,
-      entitlements,
-    });
+      res.json({
+        orders,
+        entitlements,
+      });
+    } catch (err) {
+      res.status(503).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Unable to load customer orders and entitlements from Supabase.',
+      });
+    }
   });
 
-  // 5. Protected Content Playback / Download Endpoint (Verified against Firestore Entitlements)
+  // 5. Protected Content Playback / Download Endpoint (Verified against Supabase Entitlements)
   app.post('/api/content/signed-url', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     const { productId, lessonId } = req.body || {};
@@ -874,24 +1105,52 @@ export function createApiApp() {
 
     let isFreePreview = false;
     let lessonObj: CourseLesson | undefined;
-    if (lessonId) {
-      lessonObj = serverLessons.get(String(lessonId));
-      if (lessonObj && lessonObj.isFreePreview) {
-        isFreePreview = true;
+    if (product.type === 'course') {
+      if (lessonId) {
+        const candidate = serverLessons.get(String(lessonId));
+        if (candidate && candidate.courseId === product.id) {
+          lessonObj = candidate;
+        }
+      } else {
+        const courseLessons = Array.from(serverLessons.values())
+          .filter((l) => l.courseId === product.id)
+          .sort((a, b) => a.orderIndex - b.orderIndex);
+        lessonObj = courseLessons[0];
       }
-    } else if (product.type === 'course') {
-      const courseLessons = Array.from(serverLessons.values())
-        .filter((l) => l.courseId === product.id)
-        .sort((a, b) => a.orderIndex - b.orderIndex);
-      lessonObj = courseLessons[0];
-      if (lessonObj && lessonObj.isFreePreview) {
-        isFreePreview = true;
+
+      if (!lessonObj) {
+        res.status(404).json({ error: 'Requested course lesson not found.' });
+        return;
       }
+
+      isFreePreview = Boolean(lessonObj.isFreePreview);
     }
 
-    const userEntitledProductIds = authCtx?.uid
-      ? await listUserEntitledProductIdsFromFirestore(authCtx.uid, authCtx.idToken)
-      : [];
+    const isAdminCaller = canUserPerformAdminOperation(authCtx);
+
+    // If not a free preview and not an admin, require Supabase entitlement check
+    let userEntitledProductIds: string[] = [];
+    if (!isFreePreview && !isAdminCaller) {
+      if (!authCtx?.uid) {
+        res.status(403).json({
+          error: 'Access denied. Please sign in and purchase this item to access its content.',
+          reason: 'unauthenticated',
+        });
+        return;
+      }
+
+      try {
+        userEntitledProductIds = await listUserEntitledProductIdsFromSupabase(authCtx.uid);
+      } catch (err) {
+        res.status(503).json({
+          error:
+            err instanceof Error
+              ? err.message
+              : 'Supabase entitlement verification is required to access paid content.',
+        });
+        return;
+      }
+    }
 
     const accessCheck = canUserAccessProtectedContent({
       auth: authCtx,
@@ -908,11 +1167,32 @@ export function createApiApp() {
       return;
     }
 
+    // For paid content, verify that Supabase server credentials are configured
+    if (!isFreePreview && !getSupabaseServerConfig()) {
+      res.status(503).json({
+        error:
+          'Server-side Supabase credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are required to issue signed URLs for paid content.',
+      });
+      return;
+    }
+
     const expiresAt = Date.now() + 15 * 60 * 1000;
     const subjectUid = authCtx?.uid || 'preview';
 
-    if (product.type === 'course') {
-      const resolvedLessonId = lessonObj?.id || 'default';
+    if (product.type === 'course' && lessonObj) {
+      // Ensure non-preview lessons have a valid private file path on the server
+      if (!lessonObj.isFreePreview) {
+        const verifiedFilePath = resolveVerifiedProtectedFilePath(lessonObj.videoStoragePath);
+        if (!verifiedFilePath) {
+          res.status(500).json({
+            error:
+              'Course lesson does not have a valid private storage file path configured on the server.',
+          });
+          return;
+        }
+      }
+
+      const resolvedLessonId = lessonObj.id;
       const streamToken = createSignedDownloadToken(
         subjectUid,
         `${product.id}:${resolvedLessonId}`,
@@ -922,6 +1202,7 @@ export function createApiApp() {
       res.json({
         allowed: true,
         reason: accessCheck.reason,
+        bucket: lessonObj.isFreePreview ? 'public' : SUPABASE_PROTECTED_MEDIA_BUCKET,
         expiresAt: new Date(expiresAt).toISOString(),
         signedUrl: `/api/content/stream-video?productId=${encodeURIComponent(
           product.id
@@ -937,6 +1218,7 @@ export function createApiApp() {
     res.json({
       allowed: true,
       reason: accessCheck.reason,
+      bucket: SUPABASE_PROTECTED_MEDIA_BUCKET,
       expiresAt: new Date(expiresAt).toISOString(),
       signedUrl: `/api/content/download-book?productId=${encodeURIComponent(
         product.id
@@ -945,9 +1227,8 @@ export function createApiApp() {
   });
 
   // 5B. Time-Limited, User-Bound Course Video Stream Endpoint
-  // Uses a 15-minute Google Cloud Storage V4 Signed URL redirect so large HD videos
-  // stream directly from Google Cloud Storage without hitting Vercel's 4.5 MB payload limit
-  // and without using permanent Firebase `?token=` download tokens.
+  // Re-verifies active entitlement in Supabase and redirects to a 15-minute signed URL
+  // from the private `protected-media` Supabase Storage bucket.
   app.get('/api/content/stream-video', async (req, res) => {
     const productId = String(req.query.productId || '');
     const lessonId = String(req.query.lessonId || '');
@@ -959,50 +1240,94 @@ export function createApiApp() {
       return;
     }
 
+    const lessonObj = serverLessons.get(lessonId);
+    if (!lessonObj || lessonObj.courseId !== product.id) {
+      res.status(404).send('Course lesson not found.');
+      return;
+    }
+
     const verification = verifySignedDownloadToken(token, `${productId}:${lessonId}`);
     if (!verification.valid || !verification.uid) {
       res.status(403).send('Forbidden: Valid signed video playback token required.');
       return;
     }
 
-    const lessonObj = serverLessons.get(lessonId);
-    const rawSource = lessonObj?.videoStoragePath || product.previewVideoUrl || '';
-    const storageObjPath = extractProtectedStorageObjectPath(rawSource);
+    // Free preview lessons stream directly from their public preview video URL
+    if (lessonObj.isFreePreview) {
+      const previewUrl =
+        lessonObj.videoStoragePath.startsWith('http')
+          ? lessonObj.videoStoragePath
+          : product.previewVideoUrl ||
+            'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.redirect(302, previewUrl);
+      return;
+    }
 
-    if (storageObjPath && firebaseConfig.storageBucket) {
-      await ensureLegacyProtectedStorageTokensRevoked();
-
-      const gcsSignedUrl = createGcsV4SignedReadUrl({
-        bucketName: firebaseConfig.storageBucket,
-        objectPath: storageObjPath,
-        expiresInSeconds: 900,
-      });
-
-      if (gcsSignedUrl) {
-        res.setHeader('Cache-Control', 'private, no-store');
-        res.redirect(302, gcsSignedUrl);
-        return;
-      }
-
-      if (!lessonObj?.isFreePreview) {
-        res.status(503).send(
-          'Service Account credentials (FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY) are required to sign protected course video streams.'
-        );
+    // For paid lessons, re-verify that the user's entitlement has not been revoked/refunded
+    const isAdminUid = serverAdminUids.has(verification.uid);
+    if (!isAdminUid) {
+      try {
+        const entitledIds = await listUserEntitledProductIdsFromSupabase(verification.uid);
+        if (!entitledIds.includes(product.id)) {
+          res
+            .status(403)
+            .send('Forbidden: Your entitlement for this course is inactive or was refunded.');
+          return;
+        }
+      } catch (err) {
+        res
+          .status(503)
+          .send(
+            err instanceof Error
+              ? err.message
+              : 'Supabase entitlement verification unavailable.'
+          );
         return;
       }
     }
 
-    const fallbackVideoUrl =
-      rawSource.startsWith('http') && !rawSource.includes('firebasestorage.googleapis.com')
-        ? rawSource
-        : product.previewVideoUrl ||
-          'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+    // Resolve the exact private Storage file path from the server-side lesson record
+    const verifiedObjectPath = resolveVerifiedProtectedFilePath(lessonObj.videoStoragePath);
+    if (!verifiedObjectPath) {
+      res
+        .status(500)
+        .send('Invalid private storage file path configured for this lesson.');
+      return;
+    }
 
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.redirect(302, fallbackVideoUrl);
+    if (!getSupabaseServerConfig()) {
+      res
+        .status(503)
+        .send(
+          'Server-side Supabase credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are required to stream protected course videos.'
+        );
+      return;
+    }
+
+    try {
+      const supabaseSignedUrl = await createSupabaseSignedStorageUrl({
+        bucketName: SUPABASE_PROTECTED_MEDIA_BUCKET,
+        objectPath: verifiedObjectPath,
+        expiresInSeconds: 900,
+      });
+
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.redirect(302, supabaseSignedUrl);
+      return;
+    } catch {
+      // If the sample course video file has not been uploaded to `protected-media` yet,
+      // fall back to the course preview stream only after entitlement & Supabase config passed.
+      const fallbackUrl =
+        product.previewVideoUrl ||
+        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.redirect(302, fallbackUrl);
+    }
   });
 
-  app.get('/api/content/download-book', (req, res) => {
+  // 5C. Time-Limited, User-Bound Digital Book Download Endpoint
+  app.get('/api/content/download-book', async (req, res) => {
     const productId = String(req.query.productId || '');
     const token = String(req.query.token || '');
 
@@ -1018,6 +1343,53 @@ export function createApiApp() {
       return;
     }
 
+    // Re-verify that the user's entitlement is active and not refunded/revoked
+    let entitledDownloadPath = `protected/books/${product.id}/${product.id}.pdf`;
+    const isAdminUid = serverAdminUids.has(verification.uid);
+    if (!isAdminUid) {
+      try {
+        const { entitlements } = await listUserOrdersAndEntitlementsFromSupabase(
+          verification.uid
+        );
+        const matchingEntitlement = entitlements.find((e) => e.productId === product.id);
+        if (!matchingEntitlement) {
+          res
+            .status(403)
+            .send('Forbidden: Your entitlement for this book is inactive or was refunded.');
+          return;
+        }
+        const validated = resolveVerifiedProtectedFilePath(matchingEntitlement.downloadPath);
+        if (validated) {
+          entitledDownloadPath = validated;
+        }
+      } catch (err) {
+        res
+          .status(503)
+          .send(
+            err instanceof Error
+              ? err.message
+              : 'Supabase entitlement verification unavailable.'
+          );
+        return;
+      }
+    }
+
+    // Attempt to issue a 15-minute signed URL from the private `protected-media` bucket first
+    if (getSupabaseServerConfig()) {
+      try {
+        const signedBookUrl = await createSupabaseSignedStorageUrl({
+          bucketName: SUPABASE_PROTECTED_MEDIA_BUCKET,
+          objectPath: entitledDownloadPath,
+          expiresInSeconds: 900,
+        });
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.redirect(302, signedBookUrl);
+        return;
+      } catch {
+        // If PDF object is not uploaded in `protected-media` yet, serve licensed digital edition below
+      }
+    }
+
     const content = [
       `====================================================================`,
       `SATYA'S EDUCATION — DIGITAL EDITION`,
@@ -1028,6 +1400,7 @@ export function createApiApp() {
       `Language: ${product.language}`,
       `Format: ${product.coverType}`,
       `Licensed To Student UID: ${verification.uid}`,
+      `Private Storage Path: ${entitledDownloadPath}`,
       `Issued At: ${new Date().toISOString()}`,
       `--------------------------------------------------------------------`,
       `SYNOPSIS & CHAPTER CONTENT:`,
@@ -1045,7 +1418,7 @@ export function createApiApp() {
     res.send(content);
   });
 
-  // 6. Admin Panel Overview & Mutation Endpoints (Strictly Server-Verified Admin Only + Firestore Orders)
+  // 6. Admin Panel Overview & Mutation Endpoints (Strictly Server-Verified Admin Only + Supabase Orders)
   app.get('/api/admin/overview', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
@@ -1055,11 +1428,9 @@ export function createApiApp() {
       return;
     }
 
-    await ensureLegacyProtectedStorageTokensRevoked();
-
     let allOrders: ServerOrderRecord[] = [];
     try {
-      allOrders = await listAllOrdersFromFirestoreForAdmin();
+      allOrders = await listAllOrdersFromSupabaseForAdmin();
     } catch {
       allOrders = [];
     }
@@ -1086,6 +1457,45 @@ export function createApiApp() {
     });
   });
 
+  // 6B. Admin-Only Signed Upload URL for Private `protected-media` Supabase Bucket (Enforces 50 MB Free Plan Limit)
+  app.post('/api/admin/storage/signed-upload-url', async (req, res) => {
+    const authCtx = await resolveServerAuthContext(req);
+    if (!canUserPerformAdminOperation(authCtx)) {
+      res.status(403).json({
+        error: 'Forbidden: Only verified administrators can upload protected course or book media.',
+      });
+      return;
+    }
+
+    const { objectPath, fileSizeBytes } = req.body || {};
+    const numericSize = Number(fileSizeBytes || 0);
+
+    if (numericSize > SUPABASE_FREE_PLAN_MAX_FILE_BYTES) {
+      res.status(413).json({
+        error: `File size (${(numericSize / (1024 * 1024)).toFixed(
+          1
+        )} MB) exceeds the 50 MB Supabase Free plan limit. Please split the course recording into 15–25 minute lesson modules or HLS segments under 50 MB each.`,
+      });
+      return;
+    }
+
+    try {
+      const signedUpload = await createSupabaseSignedUploadUrlForAdmin({
+        objectPath: String(objectPath || ''),
+        fileSizeBytes: numericSize,
+        bucketName: SUPABASE_PROTECTED_MEDIA_BUCKET,
+      });
+      res.json(signedUpload);
+    } catch (err) {
+      res.status(400).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Unable to create signed upload URL for protected-media bucket.',
+      });
+    }
+  });
+
   app.post('/api/admin/action', async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
@@ -1096,25 +1506,6 @@ export function createApiApp() {
     }
 
     const { action, payload } = req.body || {};
-
-    if (action === 'revoke_protected_storage_tokens') {
-      try {
-        const result = await revokeProtectedStorageDownloadTokens(
-          firebaseConfig.storageBucket
-        );
-        legacyStorageTokensRevoked = true;
-        res.json({ status: 'ok', ...result });
-        return;
-      } catch (err) {
-        res.status(503).json({
-          error:
-            err instanceof Error
-              ? err.message
-              : 'Unable to revoke protected storage tokens.',
-        });
-        return;
-      }
-    }
 
     if (action === 'upsert_product') {
       const prod = payload as CatalogProduct;
@@ -1170,6 +1561,17 @@ export function createApiApp() {
         res.status(400).json({ error: 'Invalid lesson payload.' });
         return;
       }
+      if (!lesson.isFreePreview) {
+        const verifiedPath = resolveVerifiedProtectedFilePath(lesson.videoStoragePath);
+        if (!verifiedPath) {
+          res.status(400).json({
+            error:
+              'Paid course lessons must specify a valid file path inside protected/courses/<courseId>/<filename>.mp4.',
+          });
+          return;
+        }
+        lesson.videoStoragePath = verifiedPath;
+      }
       serverLessons.set(lesson.id, lesson);
       res.json({ status: 'ok', lesson });
       return;
@@ -1189,14 +1591,13 @@ export function createApiApp() {
     if (action === 'update_order') {
       const { orderId, shipmentStatus, paymentStatus } = payload || {};
       try {
-        const updated = await updateOrderByAdminInFirestore({
+        const updated = await updateOrderByAdminInSupabase({
           orderId: String(orderId || ''),
           shipmentStatus,
           paymentStatus,
-          onDecrementPhysicalStock: decrementPhysicalCatalogStock,
         });
         if (!updated) {
-          res.status(404).json({ error: 'Order not found in Firestore.' });
+          res.status(404).json({ error: 'Order not found in Supabase.' });
           return;
         }
         res.json({ status: 'ok', order: updated });
@@ -1206,7 +1607,7 @@ export function createApiApp() {
           error:
             err instanceof Error
               ? err.message
-              : 'Service Account credentials required to update orders.',
+              : 'Server-side Supabase credentials required to update orders.',
         });
         return;
       }
