@@ -256,22 +256,22 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8">
       {/* Header Bar */}
-      <div className="bg-[#0A192F] text-white rounded-xl p-6 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+      <div className="bg-[#0A192F] text-white rounded-xl p-4 sm:p-6 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <img
             src="/logo.png"
             alt="Satya's Education Logo"
-            className="w-12 h-12 object-contain rounded-xl bg-white p-1 border border-white/20 shadow-xs shrink-0"
+            className="w-11 h-11 sm:w-12 sm:h-12 object-contain rounded-xl bg-white p-1 border border-white/20 shadow-xs shrink-0"
           />
-          <div>
+          <div className="min-w-0">
             <p className="text-xs font-mono-tabular text-[#D4AF37]">
               STUDENT LEARNING DASHBOARD
             </p>
-            <h1 className="font-display text-2xl font-bold mt-1">Welcome, {user.name}</h1>
+            <h1 className="font-display text-xl sm:text-2xl font-bold mt-1 truncate">Welcome, {user.name}</h1>
             <p className="text-xs text-slate-300 mt-1 flex flex-wrap items-center gap-1.5">
-              <span>{user.email}</span>
+              <span className="break-all">{user.email}</span>
               <span aria-hidden="true">·</span>
               <span className="uppercase">{user.role}</span>
               <span aria-hidden="true">·</span>
@@ -290,7 +290,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
         <button
           type="button"
           onClick={onLogout}
-          className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-lg inline-flex items-center gap-2 self-start sm:self-auto"
+          className="px-4 py-2.5 sm:py-2 min-h-[44px] sm:min-h-0 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-lg inline-flex items-center justify-center gap-2 self-stretch sm:self-auto"
         >
           <LogOut className="w-4 h-4 text-[#D4AF37]" />
           <span>Log Out</span>
@@ -303,19 +303,19 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
           <div className="flex items-start gap-2.5">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <div>
-              <p className="font-bold">Verify your email address ({user.email})</p>
+              <p className="font-bold break-all">Verify your email address ({user.email})</p>
               <p className="text-amber-800 mt-0.5">
                 {verificationFeedback ||
                   'Please verify your email address to secure your student account and order receipts.'}
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
               disabled={sendingVerification}
               onClick={handleSendVerificationEmail}
-              className="px-3 py-1.5 bg-[#0A192F] text-white font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-60"
+              className="px-3 py-2 bg-[#0A192F] text-white font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-60"
             >
               Send Verification Email
             </button>
@@ -323,7 +323,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
               type="button"
               disabled={sendingVerification}
               onClick={handleRefreshVerificationStatus}
-              className="px-3 py-1.5 bg-white border border-amber-300 text-amber-900 font-semibold rounded-lg hover:bg-amber-100 inline-flex items-center gap-1 disabled:opacity-60"
+              className="px-3 py-2 bg-white border border-amber-300 text-amber-900 font-semibold rounded-lg hover:bg-amber-100 inline-flex items-center gap-1 disabled:opacity-60"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>Refresh Status</span>
@@ -333,7 +333,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
       )}
 
       {/* Navigation Tabs */}
-      <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-lg mb-8 overflow-x-auto">
+      <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-lg mb-6 sm:mb-8 overflow-x-auto no-scrollbar">
         {(
           [
             { id: 'courses', label: `My Courses (${myCourses.length})` },

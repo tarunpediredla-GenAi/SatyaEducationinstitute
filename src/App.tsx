@@ -31,6 +31,8 @@ import {
   Award,
   Zap,
   Phone,
+  Home,
+  LayoutGrid,
 } from 'lucide-react';
 import {
   BUSINESS_COMPLIANCE_INFO,
@@ -430,7 +432,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => handleOpenProductDetail(product.id)}
-              className="py-2.5 px-3 bg-white border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap text-center"
+              className="min-h-[44px] sm:min-h-0 py-2.5 px-3 bg-white border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap text-center"
             >
               {product.type === 'course' ? 'Watch Preview' : 'View Details'}
             </button>
@@ -441,7 +443,7 @@ export default function App() {
                   setDashboardInitialCourseId(product.id);
                   setActiveView('dashboard');
                 }}
-                className="py-2.5 px-3 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap text-center"
+                className="min-h-[44px] sm:min-h-0 py-2.5 px-3 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap text-center"
               >
                 Open Library
               </button>
@@ -450,7 +452,7 @@ export default function App() {
                 type="button"
                 disabled={isPhysical && product.stock <= 0}
                 onClick={() => handleAddToCart(product)}
-                className="py-2.5 px-3 bg-[#0A192F] hover:bg-[#162D50] text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap text-center"
+                className="min-h-[44px] sm:min-h-0 py-2.5 px-3 bg-[#0A192F] hover:bg-[#162D50] text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-colors whitespace-nowrap text-center"
               >
                 {isPhysical && product.stock <= 0 ? 'Out of Stock' : 'Add to Cart'}
               </button>
@@ -465,7 +467,7 @@ export default function App() {
     <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A] overflow-x-clip">
       {/* Sticky Professional Navigation Header */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-xs px-3 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto h-16 sm:h-[72px] flex items-center justify-between gap-2 sm:gap-4 lg:gap-6">
+        <div className="max-w-7xl mx-auto h-[52px] sm:h-[72px] flex items-center justify-between gap-2 sm:gap-4 lg:gap-6">
           {/* Brand Emblem & Wordmark */}
           <a
             href="#home"
@@ -552,11 +554,11 @@ export default function App() {
               />
             </div>
 
-            {/* Cart Button */}
+            {/* Cart Button (shown in top bar on sm+ screens; phones use bottom tab bar Cart) */}
             <button
               type="button"
               onClick={() => setActiveView('cart')}
-              className="px-3 py-2 text-xs font-semibold text-white bg-[#0A192F] rounded-lg hover:bg-[#112240] transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-2 shadow-xs"
+              className="hidden sm:inline-flex px-3 py-2 text-xs font-semibold text-white bg-[#0A192F] rounded-lg hover:bg-[#112240] transition-colors whitespace-nowrap shrink-0 items-center gap-2 shadow-xs"
               title="View Cart"
             >
               <ShoppingBag className="w-3.5 h-3.5 text-[#D4AF37]" />
@@ -768,10 +770,10 @@ export default function App() {
       {toastMessage && (
         <div
           role="status"
-          className="fixed bottom-5 right-5 z-40 bg-[#0A192F] text-white border border-[#D4AF37] px-4 py-3 rounded-xl shadow-lg text-xs font-medium flex items-center gap-2"
+          className="fixed bottom-20 inset-x-3 sm:inset-x-auto sm:bottom-6 sm:right-6 z-40 bg-[#0A192F] text-white border border-[#D4AF37] px-4 py-3 rounded-xl shadow-lg text-xs font-medium flex items-center gap-2 max-w-md sm:max-w-sm mx-auto sm:mx-0"
         >
-          <Sparkles className="w-4 h-4 text-[#D4AF37]" />
-          <span>{toastMessage}</span>
+          <Sparkles className="w-4 h-4 text-[#D4AF37] shrink-0" />
+          <span className="leading-snug">{toastMessage}</span>
         </div>
       )}
 
@@ -781,21 +783,21 @@ export default function App() {
         {activeView === 'home' && (
           <div>
             {/* Section 1: Storefront Split Hero with Interactive Spotlight Stage */}
-            <section className="relative overflow-hidden bg-gradient-to-br from-[#050D1A] via-[#0A192F] to-[#112240] text-white border-b border-white/10 py-12 lg:py-16">
+            <section className="relative overflow-hidden bg-gradient-to-br from-[#050D1A] via-[#0A192F] to-[#112240] text-white border-b border-white/10 py-8 sm:py-12 lg:py-16">
               {/* Ambient Background Glows */}
               <div className="pointer-events-none absolute -top-40 -left-40 w-96 h-96 bg-[#D4AF37]/10 rounded-full blur-3xl" />
               <div className="pointer-events-none absolute -bottom-40 -right-40 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl" />
 
-              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-stretch">
+              <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 relative z-10">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-7 lg:gap-12 items-stretch">
                   {/* Left Column (7 cols): Headline, Value Proposition, Primary Actions & Category Strip */}
                   <div className="lg:col-span-7 flex flex-col justify-between space-y-6">
-                    <div className="space-y-5">
-                      <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#D4AF37]/15 text-[#F3E5AB] border border-[#D4AF37]/35 shadow-sm">
-                        <Sparkles className="w-3.5 h-3.5 text-[#D4AF37]" />
-                        <span className="tracking-wide">SATYA’S EDUCATION · ONLINE TECHNOLOGY ACADEMY</span>
+                    <div className="space-y-4 sm:space-y-5">
+                      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] sm:text-xs font-semibold bg-[#D4AF37]/15 text-[#F3E5AB] border border-[#D4AF37]/35 shadow-sm max-w-full">
+                        <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
+                        <span className="tracking-wide truncate">SATYA’S EDUCATION · ONLINE ACADEMY</span>
                       </div>
-                      <h1 className="font-display text-3xl sm:text-4xl lg:text-[46px] font-bold leading-[1.14] tracking-tight text-white">
+                      <h1 className="font-display responsive-hero-title text-3xl sm:text-4xl lg:text-[46px] font-bold leading-[1.14] tracking-tight text-white">
                         Master Modern{' '}
                         <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#FDE047] via-[#D4AF37] to-[#F59E0B]">
                           Software Engineering, Cloud
@@ -807,11 +809,11 @@ export default function App() {
                         SQL & Agentic AI. Built with structured syllabi, public free preview
                         lessons, production code notes, and instant lifetime dashboard access.
                       </p>
-                      <div className="flex flex-wrap items-center gap-3 pt-1">
+                      <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 pt-1">
                         <button
                           type="button"
                           onClick={() => setActiveView('courses')}
-                          className="px-6 py-3.5 bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] text-[#0A192F] text-sm font-bold rounded-xl hover:brightness-105 active:scale-95 transition-all inline-flex items-center gap-2 whitespace-nowrap shadow-lg shadow-[#D4AF37]/20"
+                          className="w-full sm:w-auto min-h-[46px] px-6 py-3 bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] text-[#0A192F] text-sm font-bold rounded-xl hover:brightness-105 active:scale-95 transition-all inline-flex items-center justify-center gap-2 whitespace-nowrap shadow-lg shadow-[#D4AF37]/20"
                         >
                           <Play className="w-4 h-4 fill-current" />
                           <span>Explore Online Courses</span>
@@ -819,7 +821,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => setActiveView('catalog')}
-                          className="px-6 py-3.5 bg-white/10 hover:bg-white/15 text-white border border-white/20 text-sm font-semibold rounded-xl active:scale-95 transition-all inline-flex items-center gap-2 whitespace-nowrap backdrop-blur-xs"
+                          className="w-full sm:w-auto min-h-[46px] px-6 py-3 bg-white/10 hover:bg-white/15 text-white border border-white/20 text-sm font-semibold rounded-xl active:scale-95 transition-all inline-flex items-center justify-center gap-2 whitespace-nowrap backdrop-blur-xs"
                         >
                           <GraduationCap className="w-4 h-4 text-[#D4AF37]" />
                           <span>Filter by Track & Price</span>
@@ -827,12 +829,12 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Technology Categories Interactive Filter Strip */}
-                    <div className="pt-5 border-t border-white/10">
+                    {/* Technology Categories Interactive Filter Strip (swipeable on mobile, wrapped on desktop) */}
+                    <div className="pt-4 sm:pt-5 border-t border-white/10">
                       <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
                         EXPLORE 11 ONLINE TECHNOLOGY COURSE TRACKS:
                       </p>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex overflow-x-auto no-scrollbar pb-1 sm:pb-0 sm:flex-wrap gap-2">
                         {categories.map((cat) => (
                           <button
                             key={cat.id}
@@ -841,7 +843,7 @@ export default function App() {
                               setSelectedCategory(cat.name);
                               setActiveView('catalog');
                             }}
-                            className="px-3 py-1.5 bg-white/10 hover:bg-[#D4AF37] hover:text-[#0A192F] hover:border-[#D4AF37] border border-white/15 text-xs font-medium text-slate-200 rounded-full transition-all duration-150 whitespace-nowrap shadow-xs active:scale-95"
+                            className="px-3.5 py-2 sm:py-1.5 bg-white/10 hover:bg-[#D4AF37] hover:text-[#0A192F] hover:border-[#D4AF37] border border-white/15 text-xs font-medium text-slate-200 rounded-full transition-all duration-150 whitespace-nowrap shrink-0 shadow-xs active:scale-95"
                           >
                             {cat.name}
                           </button>
@@ -852,20 +854,19 @@ export default function App() {
 
                   {/* Right Column (5 cols): Interactive Featured Online Course Showcase */}
                   {currentSpotlight && (
-                    <div className="lg:col-span-5 flex flex-col justify-between bg-gradient-to-b from-[#0F223D]/95 to-[#0A182E]/95 border border-[#D4AF37]/35 rounded-2xl p-5 sm:p-6 shadow-2xl backdrop-blur-md space-y-4">
+                    <div className="lg:col-span-5 flex flex-col justify-between bg-gradient-to-b from-[#0F223D]/95 to-[#0A182E]/95 border border-[#D4AF37]/35 rounded-2xl p-4 sm:p-6 shadow-2xl backdrop-blur-md space-y-4">
                       {/* Interactive Spotlight Selector Tabs */}
-                      <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-3">
-                        <span className="text-[11px] font-bold text-[#D4AF37] uppercase tracking-wider flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full bg-[#D4AF37] animate-pulse" />
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+                        <span className="text-[11px] font-bold text-[#D4AF37] uppercase tracking-wider flex items-center gap-1.5 shrink-0">
                           FEATURED COURSES
                         </span>
-                        <div className="flex items-center gap-1 bg-black/30 p-1 rounded-lg">
+                        <div className="flex items-center gap-1 bg-black/30 p-1 rounded-lg overflow-x-auto no-scrollbar max-w-full">
                           {spotlightProducts.map((item, idx) => (
                             <button
                               key={item.id}
                               type="button"
                               onClick={() => setHeroSpotlightIndex(idx)}
-                              className={`px-2.5 py-1 text-[11px] font-semibold rounded-md transition-all whitespace-nowrap ${
+                              className={`px-2.5 py-1.5 sm:py-1 text-[11px] font-semibold rounded-md transition-all whitespace-nowrap shrink-0 ${
                                 heroSpotlightIndex === idx
                                   ? 'bg-[#D4AF37] text-[#0A192F] shadow-xs'
                                   : 'text-slate-300 hover:text-white'
@@ -880,27 +881,27 @@ export default function App() {
                       {/* Visual Artwork Preview inside Hero */}
                       <div
                         onClick={() => handleOpenProductDetail(currentSpotlight.id)}
-                        className="aspect-16/10 rounded-xl overflow-hidden border border-white/20 cursor-pointer shadow-inner hover:scale-[1.01] transition-transform"
+                        className="aspect-4/3 sm:aspect-16/10 rounded-xl overflow-hidden border border-white/20 cursor-pointer shadow-inner hover:scale-[1.01] transition-transform"
                       >
                         <CoverArtwork product={currentSpotlight} className="w-full h-full" />
                       </div>
 
                       {/* Spotlight Details & Direct CTA */}
                       <div className="space-y-3">
-                        <div className="flex items-center justify-between text-xs text-slate-300">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
                           <span>
                             {currentSpotlight.coverType} · {currentSpotlight.language}
                           </span>
-                          <span className="font-mono-tabular text-[#FDE047] font-semibold px-2 py-0.5 rounded bg-white/10">
+                          <span className="font-mono-tabular text-[#FDE047] font-semibold px-2 py-0.5 rounded bg-white/10 shrink-0">
                             {currentSpotlight.level}
                           </span>
                         </div>
 
-                        <h2 className="font-display text-lg font-bold text-white leading-snug">
+                        <h2 className="font-display text-base sm:text-lg font-bold text-white leading-snug">
                           {formatCleanTitle(currentSpotlight.title)}
                         </h2>
 
-                        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-white/10">
                           <div className="flex items-baseline gap-2">
                             <span className="font-mono-tabular text-2xl font-bold text-white">
                               ₹{currentSpotlight.priceInr.toLocaleString('en-IN')}
@@ -910,18 +911,18 @@ export default function App() {
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-2">
+                          <div className="grid grid-cols-2 sm:flex sm:items-center gap-2">
                             <button
                               type="button"
                               onClick={() => handleOpenProductDetail(currentSpotlight.id)}
-                              className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
+                              className="min-h-[42px] sm:min-h-0 px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap text-center"
                             >
                               Free Preview
                             </button>
                             <button
                               type="button"
                               onClick={() => handleAddToCart(currentSpotlight)}
-                              className="px-3.5 py-2 bg-[#D4AF37] hover:bg-[#e0bc42] text-[#0A192F] text-xs font-bold rounded-lg transition-colors whitespace-nowrap shadow-sm"
+                              className="min-h-[42px] sm:min-h-0 px-3.5 py-2 bg-[#D4AF37] hover:bg-[#e0bc42] text-[#0A192F] text-xs font-bold rounded-lg transition-colors whitespace-nowrap shadow-sm text-center"
                             >
                               Add to Cart
                             </button>
@@ -1275,16 +1276,16 @@ export default function App() {
             </div>
 
             {/* Category & Attribute Filter Controls */}
-            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 space-y-4">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                 <SlidersHorizontal className="w-4 h-4 text-[#B48A1E]" />
                 <span>Filter by Technology Track:</span>
               </div>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex overflow-x-auto no-scrollbar pb-1 sm:pb-0 sm:flex-wrap gap-1.5">
                 <button
                   type="button"
                   onClick={() => setSelectedCategory('All')}
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`px-3 py-2 sm:py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                     selectedCategory === 'All'
                       ? 'bg-[#0A192F] text-white'
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -1297,7 +1298,7 @@ export default function App() {
                     key={cat.id}
                     type="button"
                     onClick={() => setSelectedCategory(cat.name)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap ${
+                    className={`px-3 py-2 sm:py-1.5 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                       selectedCategory === cat.name
                         ? 'bg-[#0A192F] text-white'
                         : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -1708,7 +1709,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="border-t border-white/10 py-6 px-4 sm:px-6 lg:px-8 text-center text-xs text-slate-400 space-y-2">
+        <div className="border-t border-white/10 py-6 px-4 sm:px-6 lg:px-8 text-center text-xs text-slate-400 space-y-2 mobile-safe-bottom lg:pb-6">
           <p className="text-slate-300 font-medium">
             {BUSINESS_COMPLIANCE_INFO.operatedByStatement}
           </p>
@@ -1721,6 +1722,60 @@ export default function App() {
           </p>
         </div>
       </footer>
+
+      {/* Mobile & Tablet Thumb-Zone Bottom Navigation Bar */}
+      <nav
+        aria-label="Mobile Quick Navigation"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 shadow-[0_-4px_16px_rgba(10,25,47,0.06)]"
+      >
+        <div className="grid grid-cols-4 h-[58px] max-w-lg mx-auto">
+          {[
+            { id: 'home' as const, label: 'Home', icon: Home },
+            { id: 'courses' as const, label: 'Courses', icon: Play },
+            { id: 'catalog' as const, label: 'Catalog', icon: LayoutGrid },
+            { id: 'cart' as const, label: 'Cart', icon: ShoppingBag },
+          ].map((tab) => {
+            const IconComp = tab.icon;
+            const isActive =
+              activeView === tab.id ||
+              (tab.id === 'courses' && activeView === 'product-detail');
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => {
+                  if (tab.id === 'courses' || tab.id === 'catalog') {
+                    setSelectedCategory('All');
+                  }
+                  setActiveView(tab.id);
+                  setMobileMenuOpen(false);
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
+                className={`relative flex flex-col items-center justify-center gap-0.5 min-h-[48px] transition-colors ${
+                  isActive ? 'text-[#0A192F]' : 'text-slate-500 hover:text-[#0A192F]'
+                }`}
+              >
+                {isActive && (
+                  <span className="absolute top-0 inset-x-4 h-0.5 bg-[#D4AF37] rounded-full" />
+                )}
+                <span className="relative inline-flex">
+                  <IconComp
+                    className={`w-5 h-5 ${isActive ? 'text-[#0A192F]' : 'text-slate-500'}`}
+                  />
+                  {tab.id === 'cart' && totalCartItemsCount > 0 && (
+                    <span className="absolute -top-1.5 -right-2.5 min-w-[16px] h-4 px-1 rounded-full bg-[#D4AF37] text-[#0A192F] text-[10px] font-mono-tabular font-bold flex items-center justify-center">
+                      {totalCartItemsCount}
+                    </span>
+                  )}
+                </span>
+                <span className="text-[10px] font-semibold tracking-tight leading-none">
+                  {tab.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
       {/* Authentication Modal */}
       <AuthModal

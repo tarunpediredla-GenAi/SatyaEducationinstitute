@@ -120,30 +120,30 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
       : 'Hybrid Bundle (Physical Hardcover + Digital PDF)';
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8">
       <button
         type="button"
         onClick={onBack}
-        className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-[#0A192F] mb-6"
+        className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-[#0A192F] mb-4 sm:mb-6 min-h-[44px]"
       >
         <ArrowLeft className="w-4 h-4" />
         <span>Back to Courses</span>
       </button>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        <div className="lg:col-span-7 space-y-8">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">
+        <div className="lg:col-span-7 space-y-6 sm:space-y-8">
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             {isCourse && activePreviewLesson ? (
               <div>
-                <div className="bg-[#0A192F] p-4 flex items-center justify-between text-xs text-slate-200 border-b border-white/10">
-                  <div className="flex items-center gap-2">
-                    <Play className="w-4 h-4 text-[#D4AF37]" />
-                    <span className="font-semibold text-white">
-                      {activePreviewLesson.isFreePreview ? 'Free Preview Lesson:' : 'Lesson:'}{' '}
+                <div className="bg-[#0A192F] p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-200 border-b border-white/10">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Play className="w-4 h-4 text-[#D4AF37] shrink-0" />
+                    <span className="font-semibold text-white truncate">
+                      {activePreviewLesson.isFreePreview ? 'Free Preview:' : 'Lesson:'}{' '}
                       {activePreviewLesson.title}
                     </span>
                   </div>
-                  <span className="font-mono-tabular text-[#D4AF37]">
+                  <span className="font-mono-tabular text-[#D4AF37] shrink-0">
                     {activePreviewLesson.durationMinutes} mins
                   </span>
                 </div>
@@ -204,7 +204,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
 
             {isCourse && (
               <div className="pt-4 border-t border-slate-200">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-4">
                   <h3 className="text-base font-bold text-[#0A192F]">
                     Recorded Modules & Lesson List ({courseLessons.length} Lessons)
                   </h3>
@@ -263,7 +263,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                               );
                             }
                           }}
-                          className={`px-3.5 py-2 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                          className={`px-3.5 py-2.5 min-h-[44px] sm:min-h-0 sm:py-2 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 w-full sm:w-auto ${
                             canPlay
                               ? 'bg-[#0A192F] text-white hover:bg-slate-800'
                               : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -322,7 +322,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
         </div>
 
         <div className="lg:col-span-5 lg:sticky lg:top-24">
-          <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-6">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-6 space-y-5 sm:space-y-6">
             <div>
               <div className="text-xs text-slate-500 mb-2">
                 <span>{product.category}</span>
@@ -413,7 +413,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                         onAddToCart(product);
                       }
                     }}
-                    className="w-full py-3 px-4 bg-[#D4AF37] hover:bg-[#c29d2b] text-[#0A192F] text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
+                    className="w-full min-h-[46px] py-3 px-4 bg-[#D4AF37] hover:bg-[#c29d2b] text-[#0A192F] text-sm font-bold rounded-lg transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
                   >
                     <span>
                       {requiresPhysicalDelivery && product.stock <= 0
@@ -425,7 +425,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                     type="button"
                     disabled={requiresPhysicalDelivery && product.stock <= 0}
                     onClick={() => onAddToCart(product)}
-                    className="w-full py-2.5 px-4 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
+                    className="w-full min-h-[44px] py-2.5 px-4 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors flex items-center justify-center gap-2"
                   >
                     <ShoppingBag className="w-4 h-4 text-[#D4AF37]" />
                     <span>Add to Cart</span>
@@ -436,7 +436,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
               <button
                 type="button"
                 onClick={() => onToggleWishlist(product.id)}
-                className="w-full py-2.5 px-4 border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
+                className="w-full min-h-[44px] py-2.5 px-4 border border-slate-300 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-50 transition-colors flex items-center justify-center gap-2"
               >
                 <Heart
                   className={`w-4 h-4 ${

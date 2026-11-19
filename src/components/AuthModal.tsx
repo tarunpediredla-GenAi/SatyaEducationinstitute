@@ -251,26 +251,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-3 sm:p-4 overflow-y-auto"
       role="dialog"
       aria-modal="true"
       aria-labelledby="auth-modal-title"
     >
-      <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-6 shadow-xl relative my-8">
+      <div className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-5 sm:p-6 shadow-xl relative my-auto max-h-[92dvh] overflow-y-auto">
         <button
           type="button"
           onClick={onClose}
           aria-label="Close authentication modal"
-          className="absolute top-4 right-4 p-2 text-slate-500 hover:text-slate-900 rounded-lg"
+          className="absolute top-3 right-3 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-slate-900 rounded-lg"
         >
           <X className="w-5 h-5" />
         </button>
 
-        <div className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-3 mb-4 pr-10">
           <img
             src="/logo.png"
             alt="Satya's Education Logo"
-            className="w-12 h-12 object-contain rounded-xl border border-slate-200 bg-white p-0.5 shadow-xs shrink-0"
+            className="w-11 h-11 sm:w-12 sm:h-12 object-contain rounded-xl border border-slate-200 bg-white p-0.5 shadow-xs shrink-0"
           />
           <div>
             <p className="text-xs font-mono-tabular font-bold tracking-wider text-[#B48A1E]">
@@ -283,7 +283,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
 
         <div className="mb-5">
-          <h2 id="auth-modal-title" className="font-display text-2xl font-bold text-[#0A192F]">
+          <h2 id="auth-modal-title" className="font-display text-xl sm:text-2xl font-bold text-[#0A192F]">
             {mode === 'login'
               ? 'Sign in to Your Learning Portal'
               : mode === 'register'
@@ -304,7 +304,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               setErrorMessage(null);
               setInfoMessage(null);
             }}
-            className={`flex-1 py-2 px-3 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+            className={`flex-1 py-2.5 sm:py-2 px-2 sm:px-3 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
               mode === 'login'
                 ? 'bg-[#0A192F] text-white'
                 : 'text-slate-600 hover:text-slate-900'
@@ -319,7 +319,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               setErrorMessage(null);
               setInfoMessage(null);
             }}
-            className={`flex-1 py-2 px-3 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+            className={`flex-1 py-2.5 sm:py-2 px-2 sm:px-3 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
               mode === 'register'
                 ? 'bg-[#0A192F] text-white'
                 : 'text-slate-600 hover:text-slate-900'
@@ -334,13 +334,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               setErrorMessage(null);
               setInfoMessage(null);
             }}
-            className={`flex-1 py-2 px-3 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+            className={`flex-1 py-2.5 sm:py-2 px-2 sm:px-3 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
               mode === 'reset'
                 ? 'bg-[#0A192F] text-white'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Forgot Password
+            <span className="sm:hidden">Reset</span>
+            <span className="hidden sm:inline">Forgot Password</span>
           </button>
         </div>
 

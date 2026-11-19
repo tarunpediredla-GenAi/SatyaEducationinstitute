@@ -128,41 +128,41 @@ export const CoverArtwork: React.FC<CoverArtworkProps> = ({ product, className =
         {/* Gold foil top rule */}
         <div className="absolute top-0 inset-x-0 h-1 bg-gradient-to-r from-[#B48A1E] via-[#FDE047] to-[#B48A1E]" />
 
-        <div className="relative z-10 h-full flex flex-col justify-between p-4 sm:p-5">
+        <div className="relative z-10 h-full flex flex-col justify-between p-3 sm:p-5 gap-2">
           {/* Top studio header bar */}
-          <div className="flex items-center justify-between text-[11px] font-mono-tabular">
-            <span className="text-[#D4AF37] font-semibold tracking-wider uppercase">
+          <div className="flex items-center justify-between gap-2 text-[10px] sm:text-[11px] font-mono-tabular">
+            <span className="text-[#D4AF37] font-semibold tracking-wider uppercase truncate">
               {product.category} · HD COURSE
             </span>
-            <span className="text-slate-300 bg-black/30 px-2 py-0.5 rounded border border-white/10">
+            <span className="text-slate-300 bg-black/30 px-2 py-0.5 rounded border border-white/10 shrink-0">
               {product.duration}
             </span>
           </div>
 
           {/* Center IDE & Video Frame Window */}
-          <div className="my-auto bg-[#070E1B]/90 border border-white/15 rounded-lg p-3 shadow-xl backdrop-blur-xs">
-            <div className="flex items-center justify-between border-b border-white/10 pb-2 mb-2.5">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-rose-400/80" />
-                <span className="w-2 h-2 rounded-full bg-amber-400/80" />
-                <span className="w-2 h-2 rounded-full bg-emerald-400/80" />
-                <span className="text-[10px] font-mono-tabular text-slate-400 ml-1.5">
+          <div className="my-auto bg-[#070E1B]/90 border border-white/15 rounded-lg p-2.5 sm:p-3 shadow-xl backdrop-blur-xs">
+            <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-1.5 sm:pb-2 mb-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="w-2 h-2 rounded-full bg-rose-400/80 shrink-0" />
+                <span className="w-2 h-2 rounded-full bg-amber-400/80 shrink-0" />
+                <span className="w-2 h-2 rounded-full bg-emerald-400/80 shrink-0" />
+                <span className="text-[9.5px] sm:text-[10px] font-mono-tabular text-slate-400 ml-1 truncate">
                   {theme.codeTitle}
                 </span>
               </div>
               <span
-                className="text-[10px] font-mono-tabular font-semibold"
+                className="text-[9.5px] sm:text-[10px] font-mono-tabular font-semibold shrink-0"
                 style={{ color: theme.badge }}
               >
                 1080p · 60fps
               </span>
             </div>
 
-            <div className="relative">
-              <div className="space-y-1 font-mono-tabular text-[10px] sm:text-[11px] leading-relaxed text-slate-300">
+            <div className="relative pr-9 sm:pr-10">
+              <div className="space-y-0.5 sm:space-y-1 font-mono-tabular text-[9.5px] sm:text-[11px] leading-relaxed text-slate-300">
                 {theme.codeLines.map((line, idx) => (
                   <div key={idx} className="truncate">
-                    <span className="text-slate-600 select-none mr-2">{idx + 1}</span>
+                    <span className="text-slate-600 select-none mr-1.5 sm:mr-2">{idx + 1}</span>
                     <span className={idx === 0 ? 'text-[#FDE047]' : idx === 2 ? 'text-sky-300' : 'text-slate-200'}>
                       {line}
                     </span>
@@ -171,8 +171,8 @@ export const CoverArtwork: React.FC<CoverArtworkProps> = ({ product, className =
               </div>
 
               {/* Floating Play Preview Medallion */}
-              <div className="absolute right-1 bottom-0 w-9 h-9 rounded-full bg-[#D4AF37] text-[#0A192F] shadow-lg flex items-center justify-center ring-4 ring-[#0A192F]/80">
-                <svg className="w-4 h-4 fill-current ml-0.5" viewBox="0 0 24 24">
+              <div className="absolute right-0.5 bottom-0 w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#D4AF37] text-[#0A192F] shadow-lg flex items-center justify-center ring-2 sm:ring-4 ring-[#0A192F]/80">
+                <svg className="w-3.5 h-3.5 sm:w-4 sm:h-4 fill-current ml-0.5" viewBox="0 0 24 24">
                   <polygon points="6,4 20,12 6,20" />
                 </svg>
               </div>
@@ -180,9 +180,9 @@ export const CoverArtwork: React.FC<CoverArtworkProps> = ({ product, className =
           </div>
 
           {/* Bottom Instructor & Curriculum strip */}
-          <div className="flex items-center justify-between text-[11px] text-slate-300 pt-1">
+          <div className="flex items-center justify-between gap-2 text-[10px] sm:text-[11px] text-slate-300 pt-0.5">
             <span className="truncate">Instructor: {product.authorOrInstructor}</span>
-            <span className="text-[#D4AF37] font-mono-tabular shrink-0">Free Preview Included</span>
+            <span className="text-[#D4AF37] font-mono-tabular shrink-0">Free Preview</span>
           </div>
         </div>
       </div>

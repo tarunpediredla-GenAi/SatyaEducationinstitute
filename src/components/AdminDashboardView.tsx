@@ -227,24 +227,24 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   );
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8">
       {/* Admin Top Header */}
-      <div className="bg-[#0A192F] text-white rounded-xl p-6 mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+      <div className="bg-[#0A192F] text-white rounded-xl p-4 sm:p-6 mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3 sm:gap-4 min-w-0">
           <img
             src="/logo.png"
             alt="Satya's Education Logo"
-            className="w-12 h-12 object-contain rounded-xl bg-white p-1 border border-white/20 shadow-xs shrink-0"
+            className="w-11 h-11 sm:w-12 sm:h-12 object-contain rounded-xl bg-white p-1 border border-white/20 shadow-xs shrink-0"
           />
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2 text-xs font-mono-tabular text-[#D4AF37]">
-              <ShieldCheck className="w-4 h-4" />
+              <ShieldCheck className="w-4 h-4 shrink-0" />
               <span>ADMINISTRATION CONSOLE</span>
             </div>
-            <h1 className="font-display text-xl sm:text-2xl font-bold mt-1">
+            <h1 className="font-display text-lg sm:text-2xl font-bold mt-1">
               Satya’s Education — Storefront & Curriculum Administration
             </h1>
-            <p className="text-xs text-slate-300 mt-1">
+            <p className="text-xs text-slate-300 mt-1 break-all">
               Authenticated Admin: {user.email}
             </p>
           </div>
@@ -272,7 +272,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
       )}
 
       {/* Admin Navigation Tabs */}
-      <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-lg mb-8 overflow-x-auto">
+      <div className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-lg mb-6 sm:mb-8 overflow-x-auto no-scrollbar">
         {(
           [
             { id: 'overview', label: 'Analytics & Summary' },

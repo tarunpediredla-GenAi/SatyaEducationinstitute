@@ -358,20 +358,20 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">
           {/* Left 7 columns: Cart Items + Delivery Address */}
           <div className="lg:col-span-7 space-y-6">
             <div className="bg-white border border-slate-200 rounded-xl divide-y divide-slate-200">
               {detailedItems.map(({ product, quantity, lineTotalInr, requiresShipping }) => (
                 <div
                   key={product.id}
-                  className="p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                  className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4"
                 >
-                  <div className="flex items-start gap-4">
+                  <div className="flex items-start gap-3 sm:gap-4 min-w-0">
                     <div className="w-24 aspect-4/3 rounded-lg overflow-hidden border border-slate-200 shrink-0 hidden sm:block">
                       <CoverArtwork product={product} className="w-full h-full" />
                     </div>
-                    <div className="space-y-1">
+                    <div className="space-y-1 min-w-0">
                       <div className="text-xs text-slate-500">
                         <span>{product.category}</span>
                         <span aria-hidden="true"> · </span>
@@ -379,7 +379,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                           {requiresShipping ? 'Physical Delivery Required' : 'Instant Digital Access'}
                         </span>
                       </div>
-                      <h3 className="text-base font-bold text-[#0A192F]">
+                      <h3 className="text-sm sm:text-base font-bold text-[#0A192F] leading-snug">
                         {formatCleanTitle(product.title)}
                       </h3>
                       <p className="text-xs text-slate-500">
@@ -388,14 +388,14 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0">
+                  <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-4 shrink-0 pt-2 sm:pt-0 border-t border-slate-100 sm:border-t-0">
                     {product.format !== 'recorded_course' ? (
                       <div className="flex items-center border border-slate-300 rounded-lg">
                         <button
                           type="button"
                           aria-label={`Decrease quantity for ${product.title}`}
                           onClick={() => onUpdateQuantity(product.id, Math.max(1, quantity - 1))}
-                          className="p-2 text-slate-600 hover:text-slate-900"
+                          className="p-2.5 text-slate-600 hover:text-slate-900"
                         >
                           <Minus className="w-3.5 h-3.5" />
                         </button>
@@ -408,7 +408,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                           onClick={() =>
                             onUpdateQuantity(product.id, Math.min(product.stock, quantity + 1))
                           }
-                          className="p-2 text-slate-600 hover:text-slate-900"
+                          className="p-2.5 text-slate-600 hover:text-slate-900"
                         >
                           <Plus className="w-3.5 h-3.5" />
                         </button>
@@ -417,18 +417,20 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                       <span className="text-xs text-slate-500">1 Course License</span>
                     )}
 
-                    <span className="font-mono-tabular text-base font-bold text-[#0A192F] min-w-[72px] text-right">
-                      ₹{lineTotalInr.toLocaleString('en-IN')}
-                    </span>
+                    <div className="flex items-center gap-2 sm:gap-3">
+                      <span className="font-mono-tabular text-base font-bold text-[#0A192F] min-w-[76px] text-right">
+                        ₹{lineTotalInr.toLocaleString('en-IN')}
+                      </span>
 
-                    <button
-                      type="button"
-                      aria-label={`Remove ${product.title} from cart`}
-                      onClick={() => onRemoveItem(product.id)}
-                      className="p-2 text-slate-400 hover:text-red-600 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${product.title} from cart`}
+                        onClick={() => onRemoveItem(product.id)}
+                        className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -605,7 +607,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
           </div>
 
           {/* Right 5 columns: Order Summary & Cashfree Checkout Button */}
-          <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-5">
+          <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-4 sm:p-6 space-y-5">
             <h2 className="font-display text-xl font-bold text-[#0A192F]">
               Order Summary (INR)
             </h2>
@@ -620,13 +622,13 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                 type="text"
                 value={couponCode}
                 onChange={(e) => setCouponCode(e.target.value)}
-                placeholder="Coupon code (try SATYA20)"
-                className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg uppercase font-mono-tabular"
+                placeholder="Coupon (SATYA20)"
+                className="min-w-0 flex-1 px-3 py-2 text-xs border border-slate-300 rounded-lg uppercase font-mono-tabular"
               />
               <button
                 type="button"
                 onClick={() => setAppliedCoupon(couponCode.trim().toUpperCase())}
-                className="px-4 py-2 bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-200"
+                className="px-4 py-2 min-h-[44px] sm:min-h-0 bg-slate-100 text-slate-800 text-xs font-semibold rounded-lg hover:bg-slate-200 shrink-0"
               >
                 Apply
               </button>
@@ -649,7 +651,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
                     key={pm.id}
                     type="button"
                     onClick={() => setPaymentMethod(pm.id)}
-                    className={`py-2 px-3 rounded-lg text-xs font-semibold border transition-colors ${
+                    className={`py-2.5 sm:py-2 px-2 sm:px-3 min-h-[44px] sm:min-h-0 rounded-lg text-xs font-semibold border transition-colors whitespace-nowrap ${
                       paymentMethod === pm.id
                         ? 'bg-[#0A192F] text-white border-[#0A192F]'
                         : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
