@@ -1,6 +1,6 @@
 // src/serverApp.ts
 import express from "express";
-import crypto2 from "node:crypto";
+import crypto from "node:crypto";
 import dotenv from "dotenv";
 
 // firebase-applet-config.json
@@ -20,6 +20,7 @@ var firebase_applet_config_default = {
 // src/utils/commerceRules.ts
 var BOOTSTRAPPED_ADMIN_EMAIL = "tarunpediredla9966@gmail.com";
 var ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+var MIN_COURSE_PRICE_INR = 1e4;
 function isValidDocumentId(id) {
   return typeof id === "string" && id.length >= 1 && id.length <= 128 && ID_REGEX.test(id);
 }
@@ -220,589 +221,655 @@ function calculateVerifiedCartSummary(params) {
   };
 }
 
-// src/utils/firestoreServerStore.ts
-import crypto from "node:crypto";
-var PROJECT_ID = (process.env.FIREBASE_PROJECT_ID || "").trim() || firebase_applet_config_default.projectId;
-var DATABASE_ID = firebase_applet_config_default.firestoreDatabaseId || "(default)";
-var FIRESTORE_BASE_URL = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
-  PROJECT_ID
-)}/databases/${encodeURIComponent(DATABASE_ID)}/documents`;
-var FIRESTORE_DOC_PREFIX = `projects/${PROJECT_ID}/databases/${DATABASE_ID}/documents`;
-var cachedServiceAccountToken = null;
-function getServiceAccountCredentials() {
-  const clientEmail = (process.env.FIREBASE_CLIENT_EMAIL || "").trim();
-  const rawPrivateKey = (process.env.FIREBASE_PRIVATE_KEY || "").trim();
-  if (!clientEmail || !rawPrivateKey) {
+// src/utils/supabaseServerStore.ts
+var SUPABASE_PROTECTED_MEDIA_BUCKET = (process.env.SUPABASE_STORAGE_BUCKET || "").trim() || "protected-media";
+var SUPABASE_FREE_PLAN_MAX_FILE_BYTES = 50 * 1024 * 1024;
+function getSupabaseServerConfig() {
+  const rawUrl = (process.env.SUPABASE_URL || "").trim().replace(/\/+$/, "");
+  const secretKey = (process.env.SUPABASE_SECRET_KEY || "").trim();
+  const storageBucket = (process.env.SUPABASE_STORAGE_BUCKET || "").trim() || SUPABASE_PROTECTED_MEDIA_BUCKET;
+  if (!rawUrl || !secretKey) {
     return null;
   }
   return {
-    clientEmail,
-    privateKey: rawPrivateKey.replace(/\\n/g, "\n")
+    url: rawUrl,
+    secretKey,
+    storageBucket
   };
 }
-async function getServiceAccountAccessToken() {
-  const creds = getServiceAccountCredentials();
-  if (!creds) {
-    return null;
-  }
-  if (cachedServiceAccountToken && cachedServiceAccountToken.expiresAtMs > Date.now()) {
-    return cachedServiceAccountToken.accessToken;
-  }
-  try {
-    const nowSec = Math.floor(Date.now() / 1e3);
-    const header = Buffer.from(
-      JSON.stringify({ alg: "RS256", typ: "JWT" })
-    ).toString("base64url");
-    const payload = Buffer.from(
-      JSON.stringify({
-        iss: creds.clientEmail,
-        sub: creds.clientEmail,
-        aud: "https://oauth2.googleapis.com/token",
-        iat: nowSec,
-        exp: nowSec + 3600,
-        scope: "https://www.googleapis.com/auth/datastore https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/devstorage.full_control"
-      })
-    ).toString("base64url");
-    const signer = crypto.createSign("RSA-SHA256");
-    signer.update(`${header}.${payload}`);
-    signer.end();
-    const signature = signer.sign(creds.privateKey, "base64url");
-    const assertion = `${header}.${payload}.${signature}`;
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion
-      }).toString()
-    });
-    if (!res.ok) {
-      return null;
-    }
-    const data = await res.json();
-    if (!data.access_token) {
-      return null;
-    }
-    cachedServiceAccountToken = {
-      accessToken: data.access_token,
-      expiresAtMs: Date.now() + Math.max(60, (data.expires_in || 3600) - 300) * 1e3
-    };
-    return data.access_token;
-  } catch {
-    return null;
-  }
-}
-async function requireServiceAccountToken(operationName) {
-  const saToken = await getServiceAccountAccessToken();
-  if (!saToken) {
+function requireSupabaseServerConfig(operationName) {
+  const cfg = getSupabaseServerConfig();
+  if (!cfg) {
     throw new Error(
-      `Privileged Firestore operation "${operationName}" failed securely: Server-side Firebase Service Account credentials (FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY) are not configured.`
+      `Privileged Supabase operation "${operationName}" failed securely: Server-side SUPABASE_URL and SUPABASE_SECRET_KEY environment variables are required.`
     );
   }
-  return saToken;
+  return cfg;
 }
-async function resolveCustomerScopedReadToken(verifiedCustomerIdToken) {
-  const saToken = await getServiceAccountAccessToken();
-  if (saToken) {
-    return saToken;
-  }
-  if (verifiedCustomerIdToken && verifiedCustomerIdToken.trim()) {
-    return verifiedCustomerIdToken.trim();
-  }
-  return null;
-}
-function createGcsV4SignedReadUrl(params) {
-  const creds = getServiceAccountCredentials();
-  if (!creds) {
-    return null;
-  }
-  const { bucketName, objectPath, expiresInSeconds = 900 } = params;
-  const now = /* @__PURE__ */ new Date();
-  const isoBasic = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  const datestamp = isoBasic.slice(0, 8);
-  const credentialScope = `${datestamp}/auto/storage/goog4_request`;
-  const credential = `${creds.clientEmail}/${credentialScope}`;
-  const encodedObjectPath = objectPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
-  const canonicalUri = `/${encodeURIComponent(bucketName)}/${encodedObjectPath}`;
-  const queryParams = {
-    "X-Goog-Algorithm": "GOOG4-RSA-SHA256",
-    "X-Goog-Credential": credential,
-    "X-Goog-Date": isoBasic,
-    "X-Goog-Expires": String(Math.min(Math.max(60, expiresInSeconds), 3600)),
-    "X-Goog-SignedHeaders": "host"
+function buildSupabaseHeaders(secretKey, extraHeaders) {
+  return {
+    apikey: secretKey,
+    Authorization: `Bearer ${secretKey}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    ...extraHeaders
   };
-  const canonicalQueryString = Object.keys(queryParams).sort().map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(queryParams[k])}`).join("&");
-  const canonicalHeaders = "host:storage.googleapis.com\n";
-  const signedHeaders = "host";
-  const payloadHash = "UNSIGNED-PAYLOAD";
-  const canonicalRequest = [
-    "GET",
-    canonicalUri,
-    canonicalQueryString,
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash
-  ].join("\n");
-  const canonicalRequestHash = crypto.createHash("sha256").update(canonicalRequest, "utf8").digest("hex");
-  const stringToSign = [
-    "GOOG4-RSA-SHA256",
-    isoBasic,
-    credentialScope,
-    canonicalRequestHash
-  ].join("\n");
-  const signer = crypto.createSign("RSA-SHA256");
-  signer.update(stringToSign, "utf8");
-  signer.end();
-  const signatureHex = signer.sign(creds.privateKey, "hex");
-  return `https://storage.googleapis.com${canonicalUri}?${canonicalQueryString}&X-Goog-Signature=${signatureHex}`;
 }
-async function revokeProtectedStorageDownloadTokens(bucketName) {
-  const saToken = await requireServiceAccountToken("revokeProtectedStorageDownloadTokens");
-  const listUrl = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(
-    bucketName
-  )}/o?prefix=${encodeURIComponent("protected/")}&maxResults=500`;
-  const listRes = await fetch(listUrl, {
-    headers: { Authorization: `Bearer ${saToken}` }
-  });
-  if (!listRes.ok) {
-    throw new Error(`Failed to list protected objects in bucket (${listRes.status}).`);
-  }
-  const data = await listRes.json();
-  const items = Array.isArray(data.items) ? data.items : [];
-  let revokedCount = 0;
-  for (const item of items) {
-    const objectName = item.name;
-    if (!objectName) continue;
-    if (item.metadata && item.metadata.firebaseStorageDownloadTokens) {
-      const nextMetadata = { ...item.metadata };
-      delete nextMetadata.firebaseStorageDownloadTokens;
-      const patchUrl = `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(
-        bucketName
-      )}/o/${encodeURIComponent(objectName)}`;
-      const patchRes = await fetch(patchUrl, {
-        method: "PATCH",
-        headers: {
-          Authorization: `Bearer ${saToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          metadata: {
-            ...nextMetadata,
-            firebaseStorageDownloadTokens: null
-          }
-        })
-      });
-      if (patchRes.ok) {
-        revokedCount += 1;
-      }
-    }
-  }
-  return { scannedCount: items.length, revokedCount };
-}
-function toFirestoreValue(val) {
-  if (val === null || val === void 0) {
-    return { nullValue: null };
-  }
-  if (typeof val === "boolean") {
-    return { booleanValue: val };
-  }
-  if (typeof val === "number") {
-    if (Number.isInteger(val)) {
-      return { integerValue: String(val) };
-    }
-    return { doubleValue: val };
-  }
-  if (typeof val === "string") {
-    return { stringValue: val };
-  }
-  if (Array.isArray(val)) {
-    return {
-      arrayValue: {
-        values: val.map((item) => toFirestoreValue(item))
-      }
-    };
-  }
-  if (typeof val === "object") {
-    const fields = {};
-    for (const [k, v] of Object.entries(val)) {
-      if (v !== void 0) {
-        fields[k] = toFirestoreValue(v);
-      }
-    }
-    return { mapValue: { fields } };
-  }
-  return { stringValue: String(val) };
-}
-function toFirestoreFields(obj) {
-  const fields = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== void 0) {
-      fields[k] = toFirestoreValue(v);
-    }
-  }
-  return fields;
-}
-function fromFirestoreValue(val) {
-  if (!val) return void 0;
-  if ("stringValue" in val) return val.stringValue;
-  if ("booleanValue" in val) return val.booleanValue;
-  if ("integerValue" in val) return Number(val.integerValue);
-  if ("doubleValue" in val) return Number(val.doubleValue);
-  if ("nullValue" in val) return null;
-  if ("arrayValue" in val) {
-    return (val.arrayValue.values || []).map((v) => fromFirestoreValue(v));
-  }
-  if ("mapValue" in val) {
-    const out = {};
-    for (const [k, v] of Object.entries(val.mapValue.fields || {})) {
-      out[k] = fromFirestoreValue(v);
-    }
-    return out;
-  }
-  return void 0;
-}
-function parseOrderFromDoc(doc) {
-  if (!doc || !doc.fields) return null;
-  const f = doc.fields;
-  const id = String(fromFirestoreValue(f.id) || "").trim();
-  const userId = String(fromFirestoreValue(f.userId) || "").trim();
-  if (!id || !userId) return null;
-  const rawItems = fromFirestoreValue(f.lineItems);
-  const lineItems = Array.isArray(rawItems) ? rawItems.map((item) => {
+function normalizeLineItems(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => {
     const rec = item || {};
+    const rawType = String(rec.type || "course").trim().toLowerCase();
+    const validType = rawType === "book" || rawType === "storybook" ? rawType : "course";
     return {
-      productId: String(rec.productId || ""),
-      title: String(rec.title || ""),
-      type: rec.type === "book" || rec.type === "storybook" ? rec.type : "course",
-      format: String(rec.format || "recorded_course"),
-      quantity: Number(rec.quantity || 1),
+      productId: String(rec.productId || "").trim(),
+      title: String(rec.title || "").trim(),
+      type: validType,
+      format: String(rec.format || "recorded_course").trim().toLowerCase(),
+      quantity: Math.max(1, Math.round(Number(rec.quantity || 1))),
       unitPriceInr: Number(rec.unitPriceInr || 0)
     };
-  }) : [];
+  });
+}
+function mapSupabaseRowToOrder(row) {
+  const totalAmountPaise = Math.round(Number(row.total_amount_paise || 0));
+  const totalAmountInr = Number((totalAmountPaise / 100).toFixed(2));
+  const cashfreeOrderId = String(row.cashfree_order_id || "").trim();
+  const cashfreePaymentId = String(row.cashfree_payment_id || "").trim();
+  const rawPaymentStatus = String(row.payment_status || "pending").trim().toLowerCase();
+  const paymentStatus = rawPaymentStatus === "paid" || rawPaymentStatus === "failed" || rawPaymentStatus === "cancelled" || rawPaymentStatus === "refunded" ? rawPaymentStatus : "pending";
+  const rawShipmentStatus = String(row.shipment_status || "not_applicable").trim().toLowerCase();
+  const shipmentStatus = rawShipmentStatus === "processing" || rawShipmentStatus === "packed" || rawShipmentStatus === "shipped" || rawShipmentStatus === "delivered" ? rawShipmentStatus : "not_applicable";
   return {
-    id,
-    userId,
-    customerName: String(fromFirestoreValue(f.customerName) || "Student"),
-    customerEmail: String(fromFirestoreValue(f.customerEmail) || ""),
-    totalAmountInr: Number(fromFirestoreValue(f.totalAmountInr) || 0),
-    paymentStatus: fromFirestoreValue(f.paymentStatus) || "pending",
-    shipmentStatus: fromFirestoreValue(f.shipmentStatus) || "not_applicable",
-    paymentReference: String(fromFirestoreValue(f.paymentReference) || ""),
-    hasPhysicalItems: Boolean(fromFirestoreValue(f.hasPhysicalItems)),
-    shippingAddressSummary: String(fromFirestoreValue(f.shippingAddressSummary) || ""),
-    itemSummary: String(fromFirestoreValue(f.itemSummary) || ""),
-    lineItems,
-    entitlementsGranted: Boolean(fromFirestoreValue(f.entitlementsGranted)),
-    createdAt: String(fromFirestoreValue(f.createdAt) || (/* @__PURE__ */ new Date()).toISOString()),
-    updatedAt: String(fromFirestoreValue(f.updatedAt) || (/* @__PURE__ */ new Date()).toISOString())
+    id: String(row.id || "").trim(),
+    userId: String(row.firebase_uid || "").trim(),
+    customerName: String(row.customer_name || "Student"),
+    customerEmail: String(row.customer_email || ""),
+    totalAmountInr,
+    totalAmountPaise,
+    currency: String(row.currency || "INR").toUpperCase(),
+    paymentStatus,
+    shipmentStatus,
+    cashfreeOrderId,
+    cashfreePaymentId,
+    paymentReference: cashfreePaymentId || cashfreeOrderId || "",
+    hasPhysicalItems: Boolean(row.has_physical_items),
+    shippingAddressSummary: String(row.shipping_address_summary || ""),
+    itemSummary: String(row.item_summary || ""),
+    lineItems: normalizeLineItems(row.line_items),
+    entitlementsGranted: Boolean(row.entitlements_granted),
+    createdAt: String(row.created_at || (/* @__PURE__ */ new Date()).toISOString()),
+    updatedAt: String(row.updated_at || (/* @__PURE__ */ new Date()).toISOString())
   };
 }
-function parseEntitlementFromDoc(doc) {
-  if (!doc || !doc.fields) return null;
-  const f = doc.fields;
-  const id = String(fromFirestoreValue(f.id) || "").trim();
-  const userId = String(fromFirestoreValue(f.userId) || "").trim();
-  const productId = String(fromFirestoreValue(f.productId) || "").trim();
-  if (!id || !userId || !productId) return null;
+function mapSupabaseRowToEntitlement(row) {
+  const userId = String(row.firebase_uid || "").trim();
+  const productId = String(row.product_id || "").trim();
+  const rawType = String(row.product_type || "course").trim().toLowerCase();
+  const productType = rawType === "book" || rawType === "storybook" ? rawType : "course";
+  const defaultDownloadPath = productType === "course" ? `protected/courses/${productId}` : `protected/books/${productId}/${productId}.pdf`;
   return {
-    id,
+    id: `${userId}_${productId}`,
     userId,
     productId,
-    productType: fromFirestoreValue(f.productType) || "course",
-    orderId: String(fromFirestoreValue(f.orderId) || ""),
-    downloadPath: String(fromFirestoreValue(f.downloadPath) || ""),
-    grantedAt: String(fromFirestoreValue(f.grantedAt) || (/* @__PURE__ */ new Date()).toISOString())
+    productType,
+    orderId: String(row.order_id || "").trim(),
+    downloadPath: String(row.download_path || defaultDownloadPath).trim(),
+    grantedAt: String(row.granted_at || (/* @__PURE__ */ new Date()).toISOString()),
+    revokedAt: row.revoked_at || null
   };
 }
-async function createPendingOrderInFirestore(order) {
-  const saToken = await requireServiceAccountToken("createPendingOrderInFirestore");
-  const pendingOrder = {
-    ...order,
-    paymentStatus: "pending",
-    paymentReference: "",
-    entitlementsGranted: false
+function validateProtectedStorageFilePath(rawPath) {
+  const trimmed = String(rawPath || "").trim().replace(/^\/+/, "");
+  if (!trimmed || trimmed.includes("..") || trimmed.includes("//") || trimmed.includes("\\")) {
+    return null;
+  }
+  let normalized = trimmed;
+  if (normalized.startsWith("courses/")) {
+    normalized = `protected/${normalized}`;
+  } else if (normalized.startsWith("books/")) {
+    normalized = `protected/${normalized}`;
+  }
+  const isCourseFile = normalized.startsWith("protected/courses/");
+  const isBookFile = normalized.startsWith("protected/books/");
+  if (!isCourseFile && !isBookFile) {
+    return null;
+  }
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length < 3) {
+    return null;
+  }
+  const fileName = segments[segments.length - 1];
+  if (!/\.[a-zA-Z0-9]{2,6}$/.test(fileName)) {
+    return null;
+  }
+  return segments.join("/");
+}
+async function createPendingOrderInSupabase(order) {
+  const cfg = requireSupabaseServerConfig("createPendingOrderInSupabase");
+  const totalAmountPaise = typeof order.totalAmountPaise === "number" && order.totalAmountPaise > 0 ? Math.round(order.totalAmountPaise) : Math.round(order.totalAmountInr * 100);
+  if (!Number.isInteger(totalAmountPaise) || totalAmountPaise <= 0) {
+    throw new Error("Calculated order total_amount_paise must be a positive integer.");
+  }
+  const initialCashfreeOrderId = order.cashfreeOrderId ? String(order.cashfreeOrderId).trim() || null : null;
+  const payload = {
+    id: order.id,
+    firebase_uid: order.userId,
+    cashfree_order_id: initialCashfreeOrderId,
+    total_amount_paise: totalAmountPaise,
+    currency: "INR",
+    payment_status: "pending",
+    cashfree_payment_id: null,
+    customer_name: order.customerName,
+    customer_email: order.customerEmail,
+    shipment_status: order.shipmentStatus,
+    has_physical_items: order.hasPhysicalItems,
+    shipping_address_summary: order.shippingAddressSummary,
+    item_summary: order.itemSummary,
+    line_items: order.lineItems.map((item) => ({
+      productId: item.productId,
+      title: item.title,
+      type: item.type,
+      format: item.format,
+      quantity: item.quantity,
+      unitPriceInr: item.unitPriceInr
+    })),
+    entitlements_granted: false,
+    created_at: order.createdAt,
+    updated_at: order.updatedAt
   };
+  const res = await fetch(`${cfg.url}/rest/v1/orders`, {
+    method: "POST",
+    headers: buildSupabaseHeaders(cfg.secretKey, {
+      Prefer: "return=representation"
+    }),
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(
+      `Failed to save pending order in Supabase (${res.status}): ${errText.slice(0, 240)}`
+    );
+  }
+  const rows = await res.json();
+  const createdRow = Array.isArray(rows) ? rows[0] : void 0;
+  if (!createdRow) {
+    throw new Error("Supabase did not return the created pending order record.");
+  }
+  return mapSupabaseRowToOrder(createdRow);
+}
+async function saveCashfreeOrderIdInSupabase(params) {
+  const cfg = requireSupabaseServerConfig("saveCashfreeOrderIdInSupabase");
+  const orderId = String(params.orderId || "").trim();
+  const cashfreeOrderId = String(params.cashfreeOrderId || "").trim();
+  if (!orderId || !cashfreeOrderId) {
+    throw new Error("Both orderId and cashfreeOrderId are required.");
+  }
+  if (orderId === cashfreeOrderId) {
+    throw new Error("cashfreeOrderId must be Cashfree cf_order_id, not merchant orderId.");
+  }
+  const existingOrder = await getOrderFromSupabase(orderId);
+  if (!existingOrder) {
+    throw new Error(`Order ${orderId} not found in Supabase.`);
+  }
+  if (existingOrder.cashfreeOrderId) {
+    if (existingOrder.cashfreeOrderId === cashfreeOrderId) {
+      return existingOrder;
+    }
+    throw new Error(
+      `Order ${orderId} already has cashfree_order_id "${existingOrder.cashfreeOrderId}"; refusing to overwrite with "${cashfreeOrderId}".`
+    );
+  }
+  const patchUrl = `${cfg.url}/rest/v1/orders?id=eq.${encodeURIComponent(
+    orderId
+  )}&cashfree_order_id=is.null`;
+  const patchRes = await fetch(patchUrl, {
+    method: "PATCH",
+    headers: buildSupabaseHeaders(cfg.secretKey, {
+      Prefer: "return=representation"
+    }),
+    body: JSON.stringify({
+      cashfree_order_id: cashfreeOrderId,
+      updated_at: (/* @__PURE__ */ new Date()).toISOString()
+    })
+  });
+  if (!patchRes.ok) {
+    const patchErr = await patchRes.text();
+    throw new Error(
+      `Failed to save Cashfree cf_order_id on order ${orderId} in Supabase (${patchRes.status}): ${patchErr.slice(
+        0,
+        240
+      )}`
+    );
+  }
+  const patchedRows = await patchRes.json();
+  if (Array.isArray(patchedRows) && patchedRows.length > 0) {
+    const mapped = mapSupabaseRowToOrder(patchedRows[0]);
+    if (mapped.cashfreeOrderId === cashfreeOrderId) {
+      return mapped;
+    }
+  }
+  const reloaded = await getOrderFromSupabase(orderId);
+  if (reloaded && reloaded.cashfreeOrderId === cashfreeOrderId) {
+    return reloaded;
+  }
+  throw new Error(
+    `Verification of stored cashfree_order_id failed for order ${orderId} in Supabase.`
+  );
+}
+async function getOrderFromSupabase(orderId) {
+  const cfg = requireSupabaseServerConfig("getOrderFromSupabase");
+  const trimmedId = String(orderId || "").trim();
+  if (!trimmedId) return null;
   const res = await fetch(
-    `${FIRESTORE_BASE_URL}/orders?documentId=${encodeURIComponent(pendingOrder.id)}`,
+    `${cfg.url}/rest/v1/orders?id=eq.${encodeURIComponent(trimmedId)}&select=*&limit=1`,
     {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${saToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        fields: toFirestoreFields(pendingOrder)
-      })
+      method: "GET",
+      headers: buildSupabaseHeaders(cfg.secretKey)
     }
   );
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(
-      `Failed to persist pending order in Firestore (${res.status}): ${errText.slice(0, 240)}`
+      `Failed to fetch order ${trimmedId} from Supabase (${res.status}): ${errText.slice(0, 240)}`
     );
   }
-  const createdDoc = await res.json();
-  return parseOrderFromDoc(createdDoc) || pendingOrder;
-}
-async function getOrderFromFirestore(orderId) {
-  const saToken = await requireServiceAccountToken("getOrderFromFirestore");
-  const res = await fetch(`${FIRESTORE_BASE_URL}/orders/${encodeURIComponent(orderId)}`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${saToken}`
-    }
-  });
-  if (res.status === 404 || !res.ok) {
+  const rows = await res.json();
+  if (!Array.isArray(rows) || rows.length === 0) {
     return null;
   }
-  const doc = await res.json();
-  const order = parseOrderFromDoc(doc);
-  if (!order) return null;
-  return {
-    order,
-    updateTime: doc.updateTime
-  };
+  return mapSupabaseRowToOrder(rows[0]);
 }
-async function fulfillPaidOrderAtomicallyInFirestore(params) {
-  const { orderId, paymentReference, onDecrementPhysicalStock } = params;
-  const saToken = await requireServiceAccountToken("fulfillPaidOrderAtomicallyInFirestore");
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const existing = await getOrderFromFirestore(orderId);
-    if (!existing) {
-      throw new Error(`Order ${orderId} not found in Firestore.`);
-    }
-    const { order, updateTime } = existing;
-    if (order.paymentStatus === "paid" && order.entitlementsGranted) {
-      const existingEntitlements = await listEntitlementsByOrderFromFirestore(
-        order.userId,
-        order.id,
-        saToken
-      );
-      return {
-        order,
-        entitlements: existingEntitlements,
-        alreadyFulfilled: true
-      };
-    }
-    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-    const updatedOrder = {
-      ...order,
-      paymentStatus: "paid",
-      paymentReference: paymentReference || order.paymentReference || `CF_${order.id}`,
-      entitlementsGranted: true,
-      updatedAt: nowIso
-    };
-    const entitlementsToGrant = [];
-    for (const item of order.lineItems) {
-      if (item.format === "recorded_course" || item.format === "digital_book" || item.format === "hybrid_book") {
-        const entitlementId = `${order.userId}_${item.productId}`;
-        entitlementsToGrant.push({
-          id: entitlementId,
-          userId: order.userId,
-          productId: item.productId,
-          productType: item.type,
-          orderId: order.id,
-          downloadPath: item.type === "course" ? `protected/courses/${item.productId}` : `protected/books/${item.productId}/${item.productId}.pdf`,
-          grantedAt: nowIso
-        });
-      }
-    }
-    const writes = [
-      // 1. Order document transition to 'paid' with optimistic concurrency lock on updateTime
-      {
-        update: {
-          name: `${FIRESTORE_DOC_PREFIX}/orders/${order.id}`,
-          fields: toFirestoreFields(updatedOrder)
-        },
-        ...updateTime ? { currentDocument: { updateTime } } : {}
-      },
-      // 2. Deterministic entitlement documents ({userId}_{productId})
-      ...entitlementsToGrant.map((ent) => ({
-        update: {
-          name: `${FIRESTORE_DOC_PREFIX}/entitlements/${ent.id}`,
-          fields: toFirestoreFields(ent)
-        }
-      }))
-    ];
-    const commitRes = await fetch(`${FIRESTORE_BASE_URL}:commit`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${saToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ writes })
-    });
-    if (commitRes.ok) {
-      if (onDecrementPhysicalStock) {
-        for (const item of order.lineItems) {
-          if (item.format === "physical_book" || item.format === "hybrid_book") {
-            onDecrementPhysicalStock(item.productId, item.quantity);
-          }
-        }
-      }
-      return {
-        order: updatedOrder,
-        entitlements: entitlementsToGrant,
-        alreadyFulfilled: false
-      };
-    }
-    if (commitRes.status === 400 || commitRes.status === 409) {
-      continue;
-    }
-    const errText = await commitRes.text();
+async function fulfillPaidOrderAtomicallyInSupabase(params) {
+  const cfg = requireSupabaseServerConfig("fulfillPaidOrderAtomicallyInSupabase");
+  const {
+    orderId,
+    cashfreeOrderId,
+    cashfreePaymentId,
+    verifiedAmountPaise,
+    verifiedCurrency = "INR",
+    onDecrementPhysicalStock
+  } = params;
+  const rpcRes = await fetch(`${cfg.url}/rest/v1/rpc/fulfill_paid_order`, {
+    method: "POST",
+    headers: buildSupabaseHeaders(cfg.secretKey),
+    body: JSON.stringify({
+      p_order_id: orderId,
+      p_cashfree_order_id: cashfreeOrderId,
+      p_cashfree_payment_id: cashfreePaymentId,
+      p_verified_amount_paise: Math.round(verifiedAmountPaise),
+      p_verified_currency: verifiedCurrency
+    })
+  });
+  if (!rpcRes.ok) {
+    const errText = await rpcRes.text();
     throw new Error(
-      `Failed to commit verified order fulfillment to Firestore (${commitRes.status}): ${errText.slice(0, 240)}`
+      `Supabase fulfill_paid_order rejected fulfillment (${rpcRes.status}): ${errText.slice(
+        0,
+        280
+      )}`
     );
   }
-  throw new Error(`Concurrent modification conflict fulfilling order ${orderId}.`);
+  const rpcResult = await rpcRes.json();
+  const alreadyFulfilled = rpcResult?.status === "already_paid";
+  const updatedOrder = await getOrderFromSupabase(orderId);
+  if (!updatedOrder || updatedOrder.paymentStatus !== "paid") {
+    throw new Error(`Order ${orderId} was not marked paid after fulfill_paid_order.`);
+  }
+  const entitlements = await listActiveEntitlementsByOrderFromSupabase(
+    updatedOrder.userId,
+    updatedOrder.id
+  );
+  const expectedDigitalItems = updatedOrder.lineItems.filter(
+    (item) => item.format === "recorded_course" || item.format === "digital_book" || item.format === "hybrid_book" || item.type === "course"
+  );
+  if (expectedDigitalItems.length > 0 && entitlements.length < expectedDigitalItems.length) {
+    const activeUserProductIds = new Set(
+      await listUserEntitledProductIdsFromSupabase(updatedOrder.userId)
+    );
+    for (const digitalItem of expectedDigitalItems) {
+      if (!activeUserProductIds.has(digitalItem.productId)) {
+        throw new Error(
+          `Entitlement verification failed for product ${digitalItem.productId} on order ${orderId}.`
+        );
+      }
+    }
+  }
+  if (!alreadyFulfilled && onDecrementPhysicalStock) {
+    for (const item of updatedOrder.lineItems) {
+      if (item.format === "physical_book" || item.format === "hybrid_book") {
+        onDecrementPhysicalStock(item.productId, item.quantity);
+      }
+    }
+  }
+  return {
+    order: updatedOrder,
+    entitlements,
+    alreadyFulfilled
+  };
 }
-async function markOrderFailedInFirestore(order) {
+async function markOrderFailedOrCancelledInSupabase(order, newStatus = "failed") {
   if (order.paymentStatus !== "pending") {
     return order;
   }
-  const saToken = await requireServiceAccountToken("markOrderFailedInFirestore");
-  const updatedOrder = {
-    ...order,
-    paymentStatus: "failed",
-    entitlementsGranted: false,
-    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-  };
-  const res = await fetch(`${FIRESTORE_BASE_URL}/orders/${encodeURIComponent(order.id)}`, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${saToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      fields: toFirestoreFields(updatedOrder)
-    })
-  });
+  const cfg = requireSupabaseServerConfig("markOrderFailedOrCancelledInSupabase");
+  const res = await fetch(
+    `${cfg.url}/rest/v1/orders?id=eq.${encodeURIComponent(
+      order.id
+    )}&payment_status=eq.pending`,
+    {
+      method: "PATCH",
+      headers: buildSupabaseHeaders(cfg.secretKey, {
+        Prefer: "return=representation"
+      }),
+      body: JSON.stringify({
+        payment_status: newStatus,
+        entitlements_granted: false,
+        updated_at: (/* @__PURE__ */ new Date()).toISOString()
+      })
+    }
+  );
   if (!res.ok) {
     return order;
   }
-  return updatedOrder;
+  const rows = await res.json();
+  return Array.isArray(rows) && rows[0] ? mapSupabaseRowToOrder(rows[0]) : order;
 }
-async function updateOrderByAdminInFirestore(params) {
-  const { orderId, shipmentStatus, paymentStatus, onDecrementPhysicalStock } = params;
-  const saToken = await requireServiceAccountToken("updateOrderByAdminInFirestore");
-  const existing = await getOrderFromFirestore(orderId);
-  if (!existing) return null;
-  let currentOrder = existing.order;
-  if (paymentStatus === "paid" && currentOrder.paymentStatus !== "paid") {
-    const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
-      orderId,
-      paymentReference: currentOrder.paymentReference || `ADMIN_VERIFIED_${orderId}`,
-      onDecrementPhysicalStock
-    });
-    currentOrder = fulfilled.order;
+async function refundOrCancelOrderInSupabase(params) {
+  const cfg = requireSupabaseServerConfig("refundOrCancelOrderInSupabase");
+  const { orderId, newStatus } = params;
+  const targetOrder = await getOrderFromSupabase(orderId);
+  if (!targetOrder) {
+    return null;
   }
-  const updatedOrder = {
-    ...currentOrder,
-    shipmentStatus: shipmentStatus || currentOrder.shipmentStatus,
-    paymentStatus: paymentStatus || currentOrder.paymentStatus,
-    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-  };
-  const res = await fetch(`${FIRESTORE_BASE_URL}/orders/${encodeURIComponent(orderId)}`, {
-    method: "PATCH",
-    headers: {
-      Authorization: `Bearer ${saToken}`,
-      "Content-Type": "application/json"
-    },
+  const rpcRes = await fetch(`${cfg.url}/rest/v1/rpc/revoke_paid_order`, {
+    method: "POST",
+    headers: buildSupabaseHeaders(cfg.secretKey),
     body: JSON.stringify({
-      fields: toFirestoreFields(updatedOrder)
+      p_order_id: targetOrder.id,
+      p_new_status: newStatus
     })
   });
-  if (!res.ok) {
-    return currentOrder;
+  if (!rpcRes.ok) {
+    const errText = await rpcRes.text();
+    throw new Error(
+      `Failed to ${newStatus} order ${targetOrder.id} in Supabase (${rpcRes.status}): ${errText.slice(
+        0,
+        240
+      )}`
+    );
   }
-  const doc = await res.json();
-  return parseOrderFromDoc(doc) || updatedOrder;
-}
-async function runStructuredQueryByField(params) {
-  const { collectionId, fieldPath, stringValue, bearerToken } = params;
-  const res = await fetch(`${FIRESTORE_BASE_URL}:runQuery`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${bearerToken}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      structuredQuery: {
-        from: [{ collectionId }],
-        where: {
-          fieldFilter: {
-            field: { fieldPath },
-            op: "EQUAL",
-            value: { stringValue }
-          }
+  const otherPaidOrdersRes = await fetch(
+    `${cfg.url}/rest/v1/orders?firebase_uid=eq.${encodeURIComponent(
+      targetOrder.userId
+    )}&payment_status=eq.paid&entitlements_granted=eq.true&id=neq.${encodeURIComponent(
+      targetOrder.id
+    )}&order=created_at.desc&select=*`,
+    {
+      method: "GET",
+      headers: buildSupabaseHeaders(cfg.secretKey)
+    }
+  );
+  if (otherPaidOrdersRes.ok) {
+    const otherPaidRows = await otherPaidOrdersRes.json();
+    const otherPaidOrders = Array.isArray(otherPaidRows) ? otherPaidRows.map((r) => mapSupabaseRowToOrder(r)) : [];
+    if (otherPaidOrders.length > 0) {
+      for (const item of targetOrder.lineItems) {
+        const isDigital = item.format === "recorded_course" || item.format === "digital_book" || item.format === "hybrid_book" || item.type === "course";
+        if (!isDigital) continue;
+        const alternateValidOrder = otherPaidOrders.find(
+          (otherOrd) => otherOrd.lineItems.some((li) => li.productId === item.productId)
+        );
+        if (alternateValidOrder) {
+          await fetch(
+            `${cfg.url}/rest/v1/entitlements?firebase_uid=eq.${encodeURIComponent(
+              targetOrder.userId
+            )}&product_id=eq.${encodeURIComponent(item.productId)}`,
+            {
+              method: "PATCH",
+              headers: buildSupabaseHeaders(cfg.secretKey),
+              body: JSON.stringify({
+                order_id: alternateValidOrder.id,
+                product_type: item.type,
+                revoked_at: null
+              })
+            }
+          );
         }
       }
-    })
-  });
+    }
+  }
+  return await getOrderFromSupabase(targetOrder.id);
+}
+async function updateOrderByAdminInSupabase(params) {
+  const cfg = requireSupabaseServerConfig("updateOrderByAdminInSupabase");
+  const { orderId, shipmentStatus, paymentStatus } = params;
+  const existing = await getOrderFromSupabase(orderId);
+  if (!existing) return null;
+  if (paymentStatus === "paid" && existing.paymentStatus !== "paid") {
+    throw new Error(
+      "Orders can only be marked paid after independent Cashfree verification via fulfill_paid_order."
+    );
+  }
+  if (paymentStatus === "refunded" || paymentStatus === "cancelled") {
+    const refundedOrder = await refundOrCancelOrderInSupabase({
+      orderId: existing.id,
+      newStatus: paymentStatus
+    });
+    if (!shipmentStatus || !refundedOrder) {
+      return refundedOrder;
+    }
+  }
+  const updateFields = {
+    updated_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  if (shipmentStatus) {
+    updateFields.shipment_status = shipmentStatus;
+  }
+  if (paymentStatus === "failed" && existing.paymentStatus === "pending") {
+    updateFields.payment_status = "failed";
+  }
+  const res = await fetch(
+    `${cfg.url}/rest/v1/orders?id=eq.${encodeURIComponent(existing.id)}`,
+    {
+      method: "PATCH",
+      headers: buildSupabaseHeaders(cfg.secretKey, {
+        Prefer: "return=representation"
+      }),
+      body: JSON.stringify(updateFields)
+    }
+  );
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(
+      `Failed to update order ${existing.id} in Supabase (${res.status}): ${errText.slice(0, 240)}`
+    );
+  }
+  const rows = await res.json();
+  return Array.isArray(rows) && rows[0] ? mapSupabaseRowToOrder(rows[0]) : existing;
+}
+async function listActiveEntitlementsByOrderFromSupabase(userId, orderId) {
+  const cfg = requireSupabaseServerConfig("listActiveEntitlementsByOrderFromSupabase");
+  const res = await fetch(
+    `${cfg.url}/rest/v1/entitlements?firebase_uid=eq.${encodeURIComponent(
+      userId
+    )}&order_id=eq.${encodeURIComponent(orderId)}&revoked_at=is.null&select=*`,
+    {
+      method: "GET",
+      headers: buildSupabaseHeaders(cfg.secretKey)
+    }
+  );
   if (!res.ok) {
     return [];
   }
   const rows = await res.json();
   if (!Array.isArray(rows)) return [];
-  return rows.map((r) => r.document).filter((d) => Boolean(d && d.fields));
+  return rows.map((r) => mapSupabaseRowToEntitlement(r));
 }
-async function listEntitlementsByOrderFromFirestore(userId, orderId, bearerToken) {
-  const docs = await runStructuredQueryByField({
-    collectionId: "entitlements",
-    fieldPath: "userId",
-    stringValue: userId,
-    bearerToken
-  });
-  return docs.map((d) => parseEntitlementFromDoc(d)).filter((e) => Boolean(e && e.orderId === orderId));
-}
-async function listUserOrdersAndEntitlementsFromFirestore(userId, userIdToken) {
-  const bearerToken = await resolveCustomerScopedReadToken(userIdToken);
-  if (!bearerToken) {
+async function listUserOrdersAndEntitlementsFromSupabase(userId) {
+  const trimmedUid = String(userId || "").trim();
+  if (!trimmedUid) {
     return { orders: [], entitlements: [] };
   }
-  const [orderDocs, entitlementDocs] = await Promise.all([
-    runStructuredQueryByField({
-      collectionId: "orders",
-      fieldPath: "userId",
-      stringValue: userId,
-      bearerToken
-    }),
-    runStructuredQueryByField({
-      collectionId: "entitlements",
-      fieldPath: "userId",
-      stringValue: userId,
-      bearerToken
-    })
+  const cfg = requireSupabaseServerConfig("listUserOrdersAndEntitlementsFromSupabase");
+  const [ordersRes, entitlementsRes] = await Promise.all([
+    fetch(
+      `${cfg.url}/rest/v1/orders?firebase_uid=eq.${encodeURIComponent(
+        trimmedUid
+      )}&order=created_at.desc&select=*`,
+      {
+        method: "GET",
+        headers: buildSupabaseHeaders(cfg.secretKey)
+      }
+    ),
+    fetch(
+      `${cfg.url}/rest/v1/entitlements?firebase_uid=eq.${encodeURIComponent(
+        trimmedUid
+      )}&revoked_at=is.null&order=granted_at.desc&select=*`,
+      {
+        method: "GET",
+        headers: buildSupabaseHeaders(cfg.secretKey)
+      }
+    )
   ]);
-  const orders = orderDocs.map((d) => parseOrderFromDoc(d)).filter((o) => Boolean(o && o.userId === userId)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const entitlements = entitlementDocs.map((d) => parseEntitlementFromDoc(d)).filter((e) => Boolean(e && e.userId === userId));
+  if (!ordersRes.ok) {
+    const errText = await ordersRes.text();
+    throw new Error(
+      `Failed to query customer orders from Supabase (${ordersRes.status}): ${errText.slice(
+        0,
+        240
+      )}`
+    );
+  }
+  if (!entitlementsRes.ok) {
+    const errText = await entitlementsRes.text();
+    throw new Error(
+      `Failed to query customer entitlements from Supabase (${entitlementsRes.status}): ${errText.slice(
+        0,
+        240
+      )}`
+    );
+  }
+  const orderRows = await ordersRes.json();
+  const entitlementRows = await entitlementsRes.json();
+  const orders = (Array.isArray(orderRows) ? orderRows : []).map((r) => mapSupabaseRowToOrder(r)).filter((o) => o.userId === trimmedUid);
+  const paidOrderIds = new Set(
+    orders.filter((o) => o.paymentStatus === "paid" && o.entitlementsGranted).map((o) => o.id)
+  );
+  const entitlements = (Array.isArray(entitlementRows) ? entitlementRows : []).filter((r) => !r.revoked_at && paidOrderIds.has(String(r.order_id || "").trim())).map((r) => mapSupabaseRowToEntitlement(r)).filter((e) => e.userId === trimmedUid);
   return { orders, entitlements };
 }
-async function listUserEntitledProductIdsFromFirestore(userId, userIdToken) {
-  const bearerToken = await resolveCustomerScopedReadToken(userIdToken);
-  if (!bearerToken) return [];
-  const entitlementDocs = await runStructuredQueryByField({
-    collectionId: "entitlements",
-    fieldPath: "userId",
-    stringValue: userId,
-    bearerToken
-  });
-  return entitlementDocs.map((d) => parseEntitlementFromDoc(d)).filter((e) => Boolean(e && e.userId === userId)).map((e) => e.productId);
+async function listUserEntitledProductIdsFromSupabase(userId) {
+  const { entitlements } = await listUserOrdersAndEntitlementsFromSupabase(userId);
+  return Array.from(new Set(entitlements.map((e) => e.productId)));
 }
-async function listAllOrdersFromFirestoreForAdmin() {
-  const saToken = await requireServiceAccountToken("listAllOrdersFromFirestoreForAdmin");
-  const res = await fetch(`${FIRESTORE_BASE_URL}/orders?pageSize=200`, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${saToken}`
+async function listAllOrdersFromSupabaseForAdmin() {
+  const cfg = requireSupabaseServerConfig("listAllOrdersFromSupabaseForAdmin");
+  const res = await fetch(
+    `${cfg.url}/rest/v1/orders?order=created_at.desc&limit=500&select=*`,
+    {
+      method: "GET",
+      headers: buildSupabaseHeaders(cfg.secretKey)
     }
-  });
+  );
   if (!res.ok) {
-    return [];
+    const errText = await res.text();
+    throw new Error(
+      `Failed to list orders for admin from Supabase (${res.status}): ${errText.slice(0, 240)}`
+    );
+  }
+  const rows = await res.json();
+  if (!Array.isArray(rows)) return [];
+  return rows.map((r) => mapSupabaseRowToOrder(r));
+}
+async function createSupabaseSignedStorageUrl(params) {
+  const cfg = requireSupabaseServerConfig("createSupabaseSignedStorageUrl");
+  const validatedPath = validateProtectedStorageFilePath(params.objectPath);
+  if (!validatedPath) {
+    throw new Error(
+      `Invalid or disallowed protected storage object path: "${params.objectPath}".`
+    );
+  }
+  const bucket = (params.bucketName || cfg.storageBucket).trim();
+  const expiresIn = Math.min(Math.max(60, Math.round(params.expiresInSeconds || 900)), 3600);
+  const encodedPath = validatedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  const signRes = await fetch(
+    `${cfg.url}/storage/v1/object/sign/${encodeURIComponent(bucket)}/${encodedPath}`,
+    {
+      method: "POST",
+      headers: buildSupabaseHeaders(cfg.secretKey),
+      body: JSON.stringify({ expiresIn })
+    }
+  );
+  if (!signRes.ok) {
+    const errText = await signRes.text();
+    throw new Error(
+      `Supabase Storage failed to sign object "${validatedPath}" in bucket "${bucket}" (${signRes.status}): ${errText.slice(
+        0,
+        240
+      )}`
+    );
+  }
+  const data = await signRes.json();
+  const rawSignedPath = data.signedURL || data.signedUrl || "";
+  if (!rawSignedPath) {
+    throw new Error(
+      `Supabase Storage did not return a signed URL for "${validatedPath}".`
+    );
+  }
+  if (rawSignedPath.startsWith("http://") || rawSignedPath.startsWith("https://")) {
+    return rawSignedPath;
+  }
+  const normalizedPrefix = rawSignedPath.startsWith("/storage/v1/") ? rawSignedPath : `/storage/v1${rawSignedPath.startsWith("/") ? "" : "/"}${rawSignedPath}`;
+  return `${cfg.url}${normalizedPrefix}`;
+}
+async function createSupabaseSignedUploadUrlForAdmin(params) {
+  const cfg = requireSupabaseServerConfig("createSupabaseSignedUploadUrlForAdmin");
+  if (typeof params.fileSizeBytes === "number" && params.fileSizeBytes > SUPABASE_FREE_PLAN_MAX_FILE_BYTES) {
+    throw new Error(
+      `File size (${(params.fileSizeBytes / (1024 * 1024)).toFixed(
+        1
+      )} MB) exceeds the 50 MB Supabase Free plan limit. Please split the course recording into 15\u201325 minute lesson modules or HLS segments under 50 MB each.`
+    );
+  }
+  const validatedPath = validateProtectedStorageFilePath(params.objectPath);
+  if (!validatedPath) {
+    throw new Error(
+      `Invalid protected storage upload path: "${params.objectPath}". Must be inside protected/courses/ or protected/books/.`
+    );
+  }
+  const bucket = (params.bucketName || cfg.storageBucket).trim();
+  const encodedPath = validatedPath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+  const res = await fetch(
+    `${cfg.url}/storage/v1/object/upload/sign/${encodeURIComponent(bucket)}/${encodedPath}`,
+    {
+      method: "POST",
+      headers: buildSupabaseHeaders(cfg.secretKey, {
+        "x-upsert": "true"
+      }),
+      body: JSON.stringify({})
+    }
+  );
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(
+      `Failed to create signed upload URL in Supabase bucket "${bucket}" (${res.status}): ${errText.slice(
+        0,
+        240
+      )}`
+    );
   }
   const data = await res.json();
-  const docs = Array.isArray(data.documents) ? data.documents : [];
-  return docs.map((d) => parseOrderFromDoc(d)).filter((o) => Boolean(o)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  if (!data.url) {
+    throw new Error("Supabase Storage did not return a signed upload URL.");
+  }
+  const fullUploadUrl = data.url.startsWith("http") ? data.url : `${cfg.url}/storage/v1${data.url.startsWith("/") ? "" : "/"}${data.url}`;
+  return {
+    signedUploadUrl: fullUploadUrl,
+    bucketName: bucket,
+    objectPath: validatedPath,
+    token: data.token
+  };
 }
 
 // src/data/sampleCatalog.ts
@@ -817,17 +884,15 @@ var INITIAL_CATEGORIES = [
   { id: "cat-aws", name: "AWS", slug: "aws", description: "Cloud architecture, IAM security, serverless compute, and storage.", group: "technology", active: true },
   { id: "cat-devops", name: "DevOps", slug: "devops", description: "CI/CD pipelines, Docker containers, Linux administration, and monitoring.", group: "technology", active: true },
   { id: "cat-genai", name: "GenAI", slug: "genai", description: "Large Language Models, prompt engineering, RAG pipelines, and embeddings.", group: "technology", active: true },
-  { id: "cat-agentic-ai", name: "Agentic AI", slug: "agentic-ai", description: "Multi-step tool-calling agents, memory architectures, and evaluation.", group: "technology", active: true },
-  { id: "cat-eng-books", name: "Engineering Textbooks", slug: "engineering-textbooks", description: "Reference handbooks and practical guides for software engineers.", group: "books", active: true },
-  { id: "cat-storybooks", name: "Children\u2019s Storybooks", slug: "childrens-storybooks", description: "Illustrated STEM, logic, and curiosity storybooks for young readers.", group: "storybooks", active: true }
+  { id: "cat-agentic-ai", name: "Agentic AI", slug: "agentic-ai", description: "Multi-step tool-calling agents, memory architectures, and evaluation.", group: "technology", active: true }
 ];
 var INITIAL_BANNERS = [
   {
     id: "banner-launch-offer",
-    title: "Academic Offer: Save 20% on Courses & Technical Books",
-    subtitle: "Apply code SATYA20 at checkout. Free shipping across India on physical book orders \u20B9999 and above.",
-    ctaText: "Explore Catalog",
-    ctaLink: "catalog",
+    title: "Academic Offer: Save 20% on Online Technology Courses",
+    subtitle: "Apply code SATYA20 at checkout for instant lifetime access to HD course recordings, projects, and downloadable code notes.",
+    ctaText: "Explore Courses",
+    ctaLink: "courses",
     couponCode: "SATYA20",
     discountPercent: 20,
     active: true
@@ -835,20 +900,62 @@ var INITIAL_BANNERS = [
 ];
 var INITIAL_PRODUCTS = [
   {
+    id: "course-react-typescript",
+    title: "Modern React 19, TypeScript & Tailwind CSS Workshop",
+    slug: "modern-react-typescript-tailwind",
+    type: "course",
+    category: "React",
+    priceInr: 1e4,
+    originalPriceInr: 15e3,
+    language: "English",
+    format: "recorded_course",
+    stock: 9999,
+    featured: true,
+    status: "published",
+    authorOrInstructor: "Satya Narayana",
+    shortDescription: "Comprehensive online course on accessible component systems, responsive design with Tailwind CSS, and state management.",
+    description: "Master component composition, accessible forms, custom hooks, and responsive design patterns that work seamlessly across mobile phones, tablets, and desktops.",
+    coverType: "HD Recorded Course (4 Modules)",
+    level: "Intermediate",
+    duration: "22 Hours",
+    previewVideoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
+  },
+  {
+    id: "course-aws-devops",
+    title: "AWS Cloud & DevOps CI/CD Foundations",
+    slug: "aws-cloud-devops-cicd-foundations",
+    type: "course",
+    category: "AWS",
+    priceInr: 1e4,
+    originalPriceInr: 15e3,
+    language: "English",
+    format: "recorded_course",
+    stock: 9999,
+    featured: false,
+    status: "published",
+    authorOrInstructor: "Satya Narayana",
+    shortDescription: "Industry-ready online training on Linux, Docker containers, GitHub Actions, and AWS core infrastructure.",
+    description: "Understand containerization, automated testing pipelines, least-privilege IAM roles, and zero-downtime deployment workflows.",
+    coverType: "HD Recorded Course (4 Modules)",
+    level: "Beginner to Intermediate",
+    duration: "20 Hours",
+    previewVideoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4"
+  },
+  {
     id: "course-python-mastery",
     title: "Complete Python 3.12 & Backend Engineering Mastery",
     slug: "complete-python-backend-mastery",
     type: "course",
     category: "Python",
-    priceInr: 1499,
-    originalPriceInr: 2499,
+    priceInr: 2e4,
+    originalPriceInr: 25e3,
     language: "English & Telugu",
     format: "recorded_course",
     stock: 9999,
     featured: true,
     status: "published",
     authorOrInstructor: "Satya Narayana",
-    shortDescription: "Comprehensive self-paced recorded course covering Python fundamentals, object-oriented design, async I/O, and automated testing.",
+    shortDescription: "Comprehensive self-paced online course covering Python fundamentals, object-oriented design, async I/O, and automated testing.",
     description: "This comprehensive course provides a structured curriculum in Python 3.12. Students build command-line utilities, data processing pipelines, and modular packages with full HD video recordings and downloadable code notes.",
     coverType: "HD Recorded Course (6 Modules)",
     level: "Beginner to Advanced",
@@ -861,15 +968,15 @@ var INITIAL_PRODUCTS = [
     slug: "production-django-rest-apis",
     type: "course",
     category: "Django",
-    priceInr: 1899,
-    originalPriceInr: 2999,
+    priceInr: 2e4,
+    originalPriceInr: 28e3,
     language: "English",
     format: "recorded_course",
     stock: 9999,
     featured: true,
     status: "published",
     authorOrInstructor: "Satya Narayana",
-    shortDescription: "Comprehensive recorded course on Django ORM, authentication, API security, and cloud deployment.",
+    shortDescription: "Comprehensive online course on Django ORM, authentication, API security, PostgreSQL, and cloud deployment.",
     description: "Learn how to architect secure, maintainable Django web applications and RESTful backends. Includes dedicated modules on token authentication, role-based access control, and relational schema design.",
     coverType: "HD Recorded Course (5 Modules)",
     level: "Intermediate",
@@ -877,172 +984,46 @@ var INITIAL_PRODUCTS = [
     previewVideoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4"
   },
   {
-    id: "course-react-typescript",
-    title: "Modern React 19, TypeScript & Tailwind CSS Workshop",
-    slug: "modern-react-typescript-tailwind",
-    type: "course",
-    category: "React",
-    priceInr: 1299,
-    originalPriceInr: 1999,
-    language: "English",
-    format: "recorded_course",
-    stock: 9999,
-    featured: false,
-    status: "published",
-    authorOrInstructor: "Satya Narayana",
-    shortDescription: "Comprehensive course on accessible component systems, responsive design with Tailwind CSS, and state management.",
-    description: "Master component composition, accessible forms, custom hooks, and responsive design patterns that work seamlessly across mobile phones, tablets, and desktops.",
-    coverType: "HD Recorded Course (4 Modules)",
-    level: "Intermediate",
-    duration: "22 Hours",
-    previewVideoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
-  },
-  {
     id: "course-agentic-ai",
     title: "Building GenAI & Agentic AI Workflows with Python",
     slug: "building-genai-agentic-ai-workflows",
     type: "course",
     category: "Agentic AI",
-    priceInr: 2199,
-    originalPriceInr: 3499,
+    priceInr: 5e4,
+    originalPriceInr: 65e3,
     language: "English",
     format: "recorded_course",
     stock: 9999,
     featured: true,
     status: "published",
     authorOrInstructor: "Satya Narayana",
-    shortDescription: "Comprehensive course covering tool-calling agents, structured outputs, retrieval-augmented generation, and safety guardrails.",
-    description: "Explore the engineering foundations of Generative AI and multi-step Agentic workflows. Covers deterministic evaluation, prompt architecture, and reliable API orchestration.",
-    coverType: "HD Recorded Course (5 Modules)",
+    shortDescription: "Flagship online program covering tool-calling agents, structured outputs, retrieval-augmented generation, and safety guardrails.",
+    description: "Explore the engineering foundations of Generative AI and multi-step Agentic workflows. Covers deterministic evaluation, prompt architecture, and reliable API orchestration for enterprise production.",
+    coverType: "HD Recorded Program (8 Modules)",
     level: "Advanced",
-    duration: "24 Hours",
+    duration: "48 Hours",
     previewVideoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4"
   },
   {
-    id: "course-aws-devops",
-    title: "AWS Cloud & DevOps CI/CD Foundations",
-    slug: "aws-cloud-devops-cicd-foundations",
+    id: "course-fullstack-ai-architect",
+    title: "Enterprise Full-Stack Systems, SQL & GenAI Architect Program",
+    slug: "enterprise-fullstack-sql-genai-architect",
     type: "course",
-    category: "AWS",
-    priceInr: 1599,
-    originalPriceInr: 2499,
-    language: "English",
+    category: "GenAI",
+    priceInr: 5e4,
+    originalPriceInr: 65e3,
+    language: "English & Telugu",
     format: "recorded_course",
     stock: 9999,
-    featured: false,
-    status: "published",
-    authorOrInstructor: "Satya Narayana",
-    shortDescription: "Industry-ready recorded training on Linux, Docker containers, GitHub Actions, and AWS core infrastructure.",
-    description: "Understand containerization, automated testing pipelines, least-privilege IAM roles, and zero-downtime deployment workflows.",
-    coverType: "HD Recorded Course (4 Modules)",
-    level: "Beginner to Intermediate",
-    duration: "20 Hours",
-    previewVideoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4"
-  },
-  {
-    id: "book-python-handbook-digital",
-    title: "The Practical Python & SQL Engineering Handbook (Digital PDF)",
-    slug: "practical-python-sql-handbook-digital",
-    type: "book",
-    category: "Python",
-    priceInr: 499,
-    originalPriceInr: 799,
-    language: "English",
-    format: "digital_book",
-    stock: 9999,
     featured: true,
     status: "published",
     authorOrInstructor: "Satya Narayana",
-    shortDescription: "Authoritative downloadable digital textbook covering clean Python idioms, SQL indexing strategies, and debugging.",
-    description: "Delivered as a digital PDF download upon purchase. Includes 320 pages of annotated code examples, query execution diagrams, and exercises.",
-    coverType: "Digital PDF (320 Pages)",
-    level: "All Levels",
-    duration: "320 Pages",
-    previewVideoUrl: ""
-  },
-  {
-    id: "book-django-architecture-print",
-    title: "Full-Stack Web Architecture with Django & React (Physical Hardcover)",
-    slug: "fullstack-django-react-hardcover",
-    type: "book",
-    category: "Django",
-    priceInr: 899,
-    originalPriceInr: 1299,
-    language: "English",
-    format: "physical_book",
-    stock: 18,
-    featured: true,
-    status: "published",
-    authorOrInstructor: "Satya Narayana",
-    shortDescription: "Authoritative physical hardcover edition shipped to your doorstep. Covers API security, database modeling, and full-stack architecture.",
-    description: "Printed on archival-grade paper with sewn hardcover binding. Requires a valid Indian delivery address at checkout and includes shipment status tracking in your dashboard.",
-    coverType: "Physical Hardcover (410 Pages)",
-    level: "Intermediate",
-    duration: "410 Pages",
-    previewVideoUrl: ""
-  },
-  {
-    id: "book-genai-systems-hybrid",
-    title: "Applied GenAI & Agentic Engineering (Print + Digital Bundle)",
-    slug: "applied-genai-agentic-engineering-bundle",
-    type: "book",
-    category: "GenAI",
-    priceInr: 1149,
-    originalPriceInr: 1599,
-    language: "English",
-    format: "hybrid_book",
-    stock: 12,
-    featured: false,
-    status: "published",
-    authorOrInstructor: "Satya Narayana",
-    shortDescription: "Comprehensive hybrid edition including instant digital PDF access plus a physical hardcover copy shipped to your address.",
-    description: "Combines immediate digital reading in your My Books library with a physical desk reference shipped via tracked courier.",
-    coverType: "Print Hardcover + Digital PDF",
-    level: "Intermediate to Advanced",
-    duration: "360 Pages",
-    previewVideoUrl: ""
-  },
-  {
-    id: "storybook-tara-algorithm-lantern",
-    title: "Tara and the Clockwork Lantern of Logic (Digital Illustrated)",
-    slug: "tara-and-the-clockwork-lantern",
-    type: "storybook",
-    category: "HTML",
-    priceInr: 299,
-    originalPriceInr: 499,
-    language: "English & Telugu",
-    format: "digital_book",
-    stock: 9999,
-    featured: true,
-    status: "published",
-    authorOrInstructor: "Satya\u2019s Publishing Studio",
-    shortDescription: "Inspiring illustrated children\u2019s storybook introducing step-by-step problem solving and curiosity for ages 7\u201312.",
-    description: "Follow young inventor Tara as she repairs her village observatory using sequences, loops, and pattern recognition. Illustrated digital edition with bilingual vocabulary notes.",
-    coverType: "Illustrated Digital Storybook (64 Pages)",
-    level: "Ages 7\u201312",
-    duration: "64 Pages",
-    previewVideoUrl: ""
-  },
-  {
-    id: "storybook-arjun-starlight-bridge",
-    title: "Arjun\u2019s Starlight Bridge & The Curious Compass (Hardcover)",
-    slug: "arjuns-starlight-bridge-hardcover",
-    type: "storybook",
-    category: "JavaScript",
-    priceInr: 549,
-    originalPriceInr: 749,
-    language: "English",
-    format: "physical_book",
-    stock: 25,
-    featured: true,
-    status: "published",
-    authorOrInstructor: "Satya\u2019s Publishing Studio",
-    shortDescription: "Deluxe physical hardcover storybook celebrating teamwork, astronomy, and logical thinking for young readers.",
-    description: "A durable full-color hardcover storybook designed for family reading and school libraries. Ships across India with full order tracking.",
-    coverType: "Hardcover Illustrated (72 Pages)",
-    level: "Ages 6\u201311",
-    duration: "72 Pages",
-    previewVideoUrl: ""
+    shortDescription: "End-to-end flagship mastery combining Python, Django, React, PostgreSQL indexing, AWS DevOps, and production GenAI systems.",
+    description: "Our complete career-ready engineering program covering full-stack architecture, high-throughput SQL design, container orchestration on AWS, and deploying reliable AI-powered applications.",
+    coverType: "HD Recorded Program (10 Modules)",
+    level: "Beginner to Advanced",
+    duration: "64 Hours",
+    previewVideoUrl: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
   }
 ];
 var INITIAL_COURSE_DETAILS = {
@@ -1089,9 +1070,9 @@ var INITIAL_COURSE_DETAILS = {
     instructor: "Satya Narayana",
     language: "English",
     level: "Advanced",
-    duration: "24 Hours",
+    duration: "48 Hours",
     introduction: "Learn how modern AI engineers design deterministic tool-calling pipelines, structured schemas, and evaluation harnesses.",
-    syllabusSummary: "Module 1: Structured Generation & Schemas \xB7 Module 2: Retrieval & Vector Indexing \xB7 Module 3: Tool-Calling Agent Loops \xB7 Module 4: Safety, Guardrails & Testing.",
+    syllabusSummary: "Module 1: Structured Generation & Schemas \xB7 Module 2: Retrieval & Vector Indexing \xB7 Module 3: Tool-Calling Agent Loops \xB7 Module 4: Safety, Guardrails & Production Evals.",
     status: "published"
   },
   "course-aws-devops": {
@@ -1104,6 +1085,18 @@ var INITIAL_COURSE_DETAILS = {
     duration: "20 Hours",
     introduction: "Step-by-step comprehensive course covering Linux server essentials, container workflows, and cloud security.",
     syllabusSummary: "Module 1: Linux & Shell Scripting \xB7 Module 2: Docker & Multi-Stage Builds \xB7 Module 3: CI/CD Pipelines \xB7 Module 4: AWS IAM, Storage & Monitoring.",
+    status: "published"
+  },
+  "course-fullstack-ai-architect": {
+    id: "course-fullstack-ai-architect",
+    productId: "course-fullstack-ai-architect",
+    title: "Enterprise Full-Stack Systems, SQL & GenAI Architect Program",
+    instructor: "Satya Narayana",
+    language: "English & Telugu",
+    level: "Beginner to Advanced",
+    duration: "64 Hours",
+    introduction: "An intensive flagship online program taking learners from foundational backend design through production React, PostgreSQL tuning, AWS deployment, and applied GenAI engineering.",
+    syllabusSummary: "Module 1: System Design & Python Core \xB7 Module 2: Django APIs & PostgreSQL Indexing \xB7 Module 3: React 19 & TypeScript Frontends \xB7 Module 4: AWS DevOps & GenAI Agent Integration.",
     status: "published"
   }
 };
@@ -1217,6 +1210,28 @@ var INITIAL_LESSONS = [
     isFreePreview: true,
     videoStoragePath: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4",
     notes: "Free preview lesson on packaging Python and Node applications securely."
+  },
+  {
+    id: "lesson-arch-1",
+    courseId: "course-fullstack-ai-architect",
+    moduleTitle: "Module 1: End-to-End Architecture Blueprint",
+    title: "01. Designing Resilient Full-Stack & AI Applications (Free Preview)",
+    orderIndex: 1,
+    durationMinutes: 26,
+    isFreePreview: true,
+    videoStoragePath: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
+    notes: "Free preview outlining database scaling, API security, and structured AI pipelines."
+  },
+  {
+    id: "lesson-arch-2",
+    courseId: "course-fullstack-ai-architect",
+    moduleTitle: "Module 2: PostgreSQL Indexing & Production Deployments",
+    title: "02. Query Planning, Composite Indexes & Zero-Downtime Releases",
+    orderIndex: 2,
+    durationMinutes: 48,
+    isFreePreview: false,
+    videoStoragePath: "protected/courses/course-fullstack-ai-architect/lesson-02.mp4",
+    notes: "Hands-on walkthrough of EXPLAIN ANALYZE, connection pooling, and automated rollouts."
   }
 ];
 
@@ -1243,10 +1258,9 @@ var serverBanners = new Map(
   INITIAL_BANNERS.map((b) => [b.id, { ...b }])
 );
 var serverAdminUids = /* @__PURE__ */ new Set();
-var legacyStorageTokensRevoked = false;
 var verifiedTokenCache = /* @__PURE__ */ new Map();
 function getDownloadSigningSecret() {
-  const configuredSecret = (process.env.FIREBASE_PRIVATE_KEY || "").trim() || (process.env.CASHFREE_SECRET_KEY || "").trim();
+  const configuredSecret = (process.env.SUPABASE_SECRET_KEY || "").trim() || (process.env.CASHFREE_SECRET_KEY || "").trim();
   if (configuredSecret) {
     return configuredSecret;
   }
@@ -1255,9 +1269,26 @@ function getDownloadSigningSecret() {
 function getCashfreeConfig() {
   const appId = (process.env.CASHFREE_APP_ID || "").trim();
   const secretKey = (process.env.CASHFREE_SECRET_KEY || "").trim();
-  const rawEnv = (process.env.CASHFREE_ENV || "PRODUCTION").trim().toUpperCase();
-  const isSandbox = rawEnv === "SANDBOX" || rawEnv === "TEST";
+  const rawEnv = (process.env.CASHFREE_ENV || "").trim().toUpperCase();
   const apiVersion = (process.env.CASHFREE_API_VERSION || "2023-08-01").trim();
+  const looksLikeSandboxKey = secretKey.startsWith("cfsk_ma_test_") || appId.toUpperCase().startsWith("TEST");
+  const looksLikeProdKey = secretKey.startsWith("cfsk_ma_prod_");
+  let isSandbox;
+  if (rawEnv === "SANDBOX" || rawEnv === "TEST") {
+    isSandbox = true;
+  } else if (rawEnv === "PRODUCTION" || rawEnv === "PROD") {
+    isSandbox = false;
+  } else {
+    isSandbox = looksLikeSandboxKey;
+  }
+  let credentialMismatchError = null;
+  if (appId && secretKey) {
+    if (!isSandbox && looksLikeSandboxKey) {
+      credentialMismatchError = "Cashfree environment mismatch: CASHFREE_ENV is set to PRODUCTION, but the configured Cashfree credentials are Sandbox/Test keys. Either set CASHFREE_ENV=SANDBOX or configure live Production credentials.";
+    } else if (isSandbox && looksLikeProdKey) {
+      credentialMismatchError = "Cashfree environment mismatch: CASHFREE_ENV is set to SANDBOX, but CASHFREE_SECRET_KEY is a live Production key (cfsk_ma_prod_). Set CASHFREE_ENV=PRODUCTION for live credentials.";
+    }
+  }
   const baseUrl = isSandbox ? "https://sandbox.cashfree.com/pg" : "https://api.cashfree.com/pg";
   return {
     appId,
@@ -1265,12 +1296,32 @@ function getCashfreeConfig() {
     apiVersion,
     baseUrl,
     mode: isSandbox ? "sandbox" : "production",
-    configured: Boolean(appId && secretKey)
+    configured: Boolean(appId && secretKey),
+    credentialMismatchError
   };
+}
+function sanitizeCashfreeCustomerName(rawName, fallbackEmail) {
+  const candidate = rawName.includes("@") ? rawName.split("@")[0] : rawName || (fallbackEmail ? fallbackEmail.split("@")[0] : "Satya Student");
+  const lettersAndSpaces = candidate.replace(/[^a-zA-Z\s]/g, " ").replace(/\s+/g, " ").trim();
+  if (lettersAndSpaces.length >= 3) {
+    return lettersAndSpaces.slice(0, 90);
+  }
+  return "Satya Student";
+}
+function sanitizeCashfreeIndianPhone(rawPhone) {
+  const digits = String(rawPhone || "").replace(/[^0-9]/g, "");
+  const lastTen = digits.slice(-10);
+  if (/^[6-9][0-9]{9}$/.test(lastTen)) {
+    return lastTen;
+  }
+  return "9876543210";
+}
+function sanitizeCashfreeOrderNote(rawNote) {
+  return String(rawNote || "").replace(/₹/g, "INR ").replace(/[^a-zA-Z0-9\s.,_-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
 }
 function createSignedDownloadToken(uid, resourceIdentifier, expiresAtMs) {
   const payload = `${uid}|${resourceIdentifier}|${expiresAtMs}`;
-  const sig = crypto2.createHmac("sha256", getDownloadSigningSecret()).update(payload).digest("hex");
+  const sig = crypto.createHmac("sha256", getDownloadSigningSecret()).update(payload).digest("hex");
   return Buffer.from(`${payload}|${sig}`).toString("base64url");
 }
 function verifySignedDownloadToken(token, expectedResourceIdentifier) {
@@ -1282,8 +1333,8 @@ function verifySignedDownloadToken(token, expectedResourceIdentifier) {
     if (resourceId !== expectedResourceIdentifier) return { valid: false };
     const expMs = Number(expStr);
     if (!Number.isFinite(expMs) || Date.now() > expMs) return { valid: false };
-    const expectedSig = crypto2.createHmac("sha256", getDownloadSigningSecret()).update(`${uid}|${resourceId}|${expStr}`).digest("hex");
-    if (providedSig.length !== expectedSig.length || !crypto2.timingSafeEqual(Buffer.from(providedSig), Buffer.from(expectedSig))) {
+    const expectedSig = crypto.createHmac("sha256", getDownloadSigningSecret()).update(`${uid}|${resourceId}|${expStr}`).digest("hex");
+    if (providedSig.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(providedSig), Buffer.from(expectedSig))) {
       return { valid: false };
     }
     return { valid: true, uid };
@@ -1291,31 +1342,32 @@ function verifySignedDownloadToken(token, expectedResourceIdentifier) {
     return { valid: false };
   }
 }
-function extractProtectedStorageObjectPath(pathOrUrl) {
-  const trimmed = pathOrUrl.trim();
+function resolveVerifiedProtectedFilePath(rawServerPathOrUrl) {
+  const trimmed = String(rawServerPathOrUrl || "").trim();
   if (!trimmed) return null;
-  if (trimmed.startsWith("protected/") || trimmed.startsWith("public/")) {
-    return trimmed;
+  const directValidated = validateProtectedStorageFilePath(trimmed);
+  if (directValidated) {
+    return directValidated;
   }
   try {
     const parsed = new URL(trimmed);
     if (parsed.hostname.includes("firebasestorage.googleapis.com")) {
       const match = parsed.pathname.match(/\/o\/(.+)$/);
       if (match?.[1]) {
-        return decodeURIComponent(match[1]);
+        return validateProtectedStorageFilePath(decodeURIComponent(match[1]));
+      }
+    }
+    if (parsed.pathname.includes("/storage/v1/object/")) {
+      const match = parsed.pathname.match(
+        /\/storage\/v1\/object\/(?:sign|public|authenticated)\/[^/]+\/(.+)$/
+      );
+      if (match?.[1]) {
+        return validateProtectedStorageFilePath(decodeURIComponent(match[1]));
       }
     }
   } catch {
   }
   return null;
-}
-async function ensureLegacyProtectedStorageTokensRevoked() {
-  if (legacyStorageTokensRevoked || !firebase_applet_config_default.storageBucket) return;
-  try {
-    await revokeProtectedStorageDownloadTokens(firebase_applet_config_default.storageBucket);
-    legacyStorageTokensRevoked = true;
-  } catch {
-  }
 }
 async function resolveServerAuthContext(req) {
   const authHeader = req.headers.authorization;
@@ -1401,8 +1453,34 @@ async function verifyOrderWithCashfreeServer(order) {
     return {
       verifiedPaid: false,
       cashfreeOrderStatus: "UNCONFIGURED",
-      paymentReference: "",
+      cashfreeOrderId: "",
+      cashfreePaymentId: "",
+      verifiedAmountPaise: 0,
+      verifiedCurrency: "",
       error: "Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server."
+    };
+  }
+  if (cfConfig.credentialMismatchError) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "CREDENTIAL_MISMATCH",
+      cashfreeOrderId: "",
+      cashfreePaymentId: "",
+      verifiedAmountPaise: 0,
+      verifiedCurrency: "",
+      error: cfConfig.credentialMismatchError
+    };
+  }
+  const storedCashfreeOrderId = String(order.cashfreeOrderId || "").trim();
+  if (!storedCashfreeOrderId) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "MISSING_CF_ORDER_ID",
+      cashfreeOrderId: "",
+      cashfreePaymentId: "",
+      verifiedAmountPaise: 0,
+      verifiedCurrency: "",
+      error: `Order ${order.id} does not have a registered Cashfree cf_order_id in Supabase because its checkout session was not initialized. Please start a new checkout from your cart.`
     };
   }
   const cfRes = await fetch(
@@ -1422,49 +1500,137 @@ async function verifyOrderWithCashfreeServer(order) {
     return {
       verifiedPaid: false,
       cashfreeOrderStatus: "LOOKUP_FAILED",
-      paymentReference: "",
-      error: `Cashfree order verification request failed (${cfRes.status}): ${errBody.slice(0, 200)}`
+      cashfreeOrderId: "",
+      cashfreePaymentId: "",
+      verifiedAmountPaise: 0,
+      verifiedCurrency: "",
+      error: `Cashfree order verification request failed (${cfRes.status} in ${cfConfig.mode} mode): ${errBody.slice(0, 200)}`
     };
   }
   const cfOrder = await cfRes.json();
   const cfStatus = String(cfOrder.order_status || "ACTIVE").toUpperCase();
-  const amountMatches = typeof cfOrder.order_amount === "number" && Math.abs(cfOrder.order_amount - order.totalAmountInr) < 0.01;
-  const currencyMatches = String(cfOrder.order_currency || "INR").toUpperCase() === "INR";
-  if (cfStatus === "PAID" && amountMatches && currencyMatches) {
-    let paymentRef = String(cfOrder.cf_order_id || `CF_${order.id}`);
-    try {
-      const paymentsRes = await fetch(
-        `${cfConfig.baseUrl}/orders/${encodeURIComponent(order.id)}/payments`,
-        {
-          method: "GET",
-          headers: {
-            "x-client-id": cfConfig.appId,
-            "x-client-secret": cfConfig.secretKey,
-            "x-api-version": cfConfig.apiVersion,
-            Accept: "application/json"
-          }
-        }
-      );
-      if (paymentsRes.ok) {
-        const paymentsList = await paymentsRes.json();
-        const successPayment = Array.isArray(paymentsList) ? paymentsList.find((p) => String(p.payment_status).toUpperCase() === "SUCCESS") : void 0;
-        if (successPayment?.cf_payment_id) {
-          paymentRef = `CF_PAY_${successPayment.cf_payment_id}`;
-        }
-      }
-    } catch {
-    }
+  const returnedMerchantOrderId = String(cfOrder.order_id || "").trim();
+  const returnedCashfreeOrderId = String(cfOrder.cf_order_id ?? "").trim();
+  const returnedCurrency = String(cfOrder.order_currency || "").trim().toUpperCase();
+  const returnedAmountPaise = typeof cfOrder.order_amount === "number" && Number.isFinite(cfOrder.order_amount) ? Math.round(cfOrder.order_amount * 100) : -1;
+  if (returnedMerchantOrderId !== order.id) {
     return {
-      verifiedPaid: true,
-      cashfreeOrderStatus: "PAID",
-      paymentReference: paymentRef
+      verifiedPaid: false,
+      cashfreeOrderStatus: cfStatus,
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: "",
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: `Merchant order_id mismatch from Cashfree: expected ${order.id}, received ${returnedMerchantOrderId}.`
+    };
+  }
+  if (!returnedCashfreeOrderId || returnedCashfreeOrderId !== storedCashfreeOrderId) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: cfStatus,
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: "",
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: `Cashfree cf_order_id mismatch: expected ${storedCashfreeOrderId}, received ${returnedCashfreeOrderId || "empty"}.`
+    };
+  }
+  const amountMatches = returnedAmountPaise === order.totalAmountPaise;
+  const currencyMatches = returnedCurrency === "INR";
+  if (cfStatus !== "PAID" || !amountMatches || !currencyMatches) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: cfStatus,
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: "",
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: cfStatus === "PAID" && (!amountMatches || !currencyMatches) ? "Cashfree order amount or currency mismatch." : `Payment is not completed yet (Cashfree status: ${cfStatus}).`
+    };
+  }
+  const paymentsRes = await fetch(
+    `${cfConfig.baseUrl}/orders/${encodeURIComponent(order.id)}/payments`,
+    {
+      method: "GET",
+      headers: {
+        "x-client-id": cfConfig.appId,
+        "x-client-secret": cfConfig.secretKey,
+        "x-api-version": cfConfig.apiVersion,
+        Accept: "application/json"
+      }
+    }
+  );
+  if (!paymentsRes.ok) {
+    const errText = await paymentsRes.text();
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "PAYMENTS_LOOKUP_FAILED",
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: "",
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: `Cashfree payments verification request failed (${paymentsRes.status}): ${errText.slice(
+        0,
+        200
+      )}`
+    };
+  }
+  const paymentsList = await paymentsRes.json();
+  const successPayment = Array.isArray(paymentsList) ? paymentsList.find(
+    (p) => String(p?.payment_status || "").toUpperCase() === "SUCCESS" && p?.cf_payment_id !== void 0 && p?.cf_payment_id !== null && String(p.cf_payment_id).trim().length > 0
+  ) : void 0;
+  if (!successPayment) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "MISSING_SUCCESS_PAYMENT",
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: "",
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: "Cashfree did not return a SUCCESS payment transaction with a valid cf_payment_id."
+    };
+  }
+  const realCashfreePaymentId = String(successPayment.cf_payment_id).trim();
+  if (successPayment.order_id && String(successPayment.order_id).trim() !== order.id) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "PAYMENT_ORDER_MISMATCH",
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: realCashfreePaymentId,
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: "Cashfree payment record order_id does not match the merchant order ID."
+    };
+  }
+  if (typeof successPayment.payment_amount === "number" && Number.isFinite(successPayment.payment_amount) && Math.round(successPayment.payment_amount * 100) !== order.totalAmountPaise) {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "PAYMENT_AMOUNT_MISMATCH",
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: realCashfreePaymentId,
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: "Cashfree payment transaction amount does not match the order total."
+    };
+  }
+  if (successPayment.payment_currency && String(successPayment.payment_currency).trim().toUpperCase() !== "INR") {
+    return {
+      verifiedPaid: false,
+      cashfreeOrderStatus: "PAYMENT_CURRENCY_MISMATCH",
+      cashfreeOrderId: returnedCashfreeOrderId,
+      cashfreePaymentId: realCashfreePaymentId,
+      verifiedAmountPaise: returnedAmountPaise,
+      verifiedCurrency: returnedCurrency,
+      error: "Cashfree payment transaction currency is not INR."
     };
   }
   return {
-    verifiedPaid: false,
-    cashfreeOrderStatus: cfStatus,
-    paymentReference: "",
-    error: cfStatus === "PAID" && (!amountMatches || !currencyMatches) ? "Cashfree order amount or currency mismatch." : `Payment is not completed yet (Cashfree status: ${cfStatus}).`
+    verifiedPaid: true,
+    cashfreeOrderStatus: "PAID",
+    cashfreeOrderId: returnedCashfreeOrderId,
+    cashfreePaymentId: realCashfreePaymentId,
+    verifiedAmountPaise: returnedAmountPaise,
+    verifiedCurrency: "INR"
   };
 }
 function createApiApp() {
@@ -1533,7 +1699,30 @@ function createApiApp() {
     const authCtx = await resolveServerAuthContext(req);
     if (!authCtx || !authCtx.uid) {
       res.status(401).json({
+        checkoutInitialized: false,
         error: "Authentication required. Please log in with your account before checking out."
+      });
+      return;
+    }
+    if (!getSupabaseServerConfig()) {
+      res.status(503).json({
+        checkoutInitialized: false,
+        error: "Server database credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are not configured on the server."
+      });
+      return;
+    }
+    const cfConfig = getCashfreeConfig();
+    if (!cfConfig.configured) {
+      res.status(503).json({
+        checkoutInitialized: false,
+        error: "Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server."
+      });
+      return;
+    }
+    if (cfConfig.credentialMismatchError) {
+      res.status(503).json({
+        checkoutInitialized: false,
+        error: cfConfig.credentialMismatchError
       });
       return;
     }
@@ -1556,21 +1745,29 @@ function createApiApp() {
       shippingAddressProvided: hasAddress
     });
     if (!verifiedCart.valid) {
-      res.status(400).json({ error: verifiedCart.error || "Cart validation failed." });
+      res.status(400).json({
+        checkoutInitialized: false,
+        error: verifiedCart.error || "Cart validation failed."
+      });
       return;
     }
-    const orderId = `ORD_${Date.now().toString().slice(-6)}_${crypto2.randomBytes(3).toString("hex").toUpperCase()}`;
-    const addressSummary = verifiedCart.hasPhysicalItems ? `${shippingAddress.fullName || customerName || "Customer"}, ${shippingAddress.line1}, ${shippingAddress.city}, ${shippingAddress.state || ""} - ${shippingAddress.postalCode} (${shippingAddress.phone || customerPhone || ""})` : "Digital Delivery (My Courses & My Books Library)";
+    const orderId = `ORD_${Date.now().toString().slice(-6)}_${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const addressSummary = verifiedCart.hasPhysicalItems ? `${shippingAddress.fullName || customerName || "Customer"}, ${shippingAddress.line1}, ${shippingAddress.city}, ${shippingAddress.state || ""} - ${shippingAddress.postalCode} (${shippingAddress.phone || customerPhone || ""})` : "Digital Delivery (Student Dashboard \u2014 My Courses)";
     const itemSummary = verifiedCart.items.map((i) => `${i.title} x${i.quantity} (\u20B9${i.lineTotalInr})`).join(" \xB7 ");
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    const totalAmountPaise = Math.round(verifiedCart.totalAmountInr * 100);
     const draftOrder = {
       id: orderId,
       userId: authCtx.uid,
       customerName: String(customerName || authCtx.email || "Student").slice(0, 120),
       customerEmail: String(authCtx.email || "student@example.com").slice(0, 256),
       totalAmountInr: verifiedCart.totalAmountInr,
+      totalAmountPaise,
+      currency: "INR",
       paymentStatus: "pending",
       shipmentStatus: verifiedCart.hasPhysicalItems ? "processing" : "not_applicable",
+      cashfreeOrderId: "",
+      cashfreePaymentId: "",
       paymentReference: "",
       hasPhysicalItems: verifiedCart.hasPhysicalItems,
       shippingAddressSummary: addressSummary.slice(0, 600),
@@ -1589,22 +1786,24 @@ function createApiApp() {
     };
     let pendingOrder;
     try {
-      pendingOrder = await createPendingOrderInFirestore(draftOrder);
+      pendingOrder = await createPendingOrderInSupabase(draftOrder);
     } catch (err) {
       res.status(503).json({
-        error: err instanceof Error ? err.message : "Unable to save pending order in Firestore."
+        checkoutInitialized: false,
+        error: err instanceof Error ? err.message : "Unable to save pending order in Supabase."
       });
       return;
     }
-    const cfConfig = getCashfreeConfig();
-    if (!cfConfig.configured) {
-      res.status(503).json({
-        error: 'Cashfree payment gateway credentials (CASHFREE_APP_ID and CASHFREE_SECRET_KEY) are not configured on the server. Order has been saved in Firestore with status "pending" and will not be marked paid until verified with Cashfree.',
-        order: pendingOrder
-      });
-      return;
-    }
-    const sanitizedPhone = String(shippingAddress?.phone || customerPhone || "9876543210").replace(/[^0-9]/g, "").slice(-10) || "9876543210";
+    const sanitizedCustomerName = sanitizeCashfreeCustomerName(
+      String(shippingAddress?.fullName || customerName || ""),
+      pendingOrder.customerEmail
+    );
+    const sanitizedPhone = sanitizeCashfreeIndianPhone(
+      String(shippingAddress?.phone || customerPhone || "")
+    );
+    const sanitizedCustomerId = authCtx.uid.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48) || `cust_${Date.now()}`;
+    const sanitizedNote = sanitizeCashfreeOrderNote(pendingOrder.itemSummary);
+    const validReturnUrl = typeof returnUrl === "string" && (returnUrl.startsWith("https://") || cfConfig.mode === "sandbox" && returnUrl.startsWith("http://")) ? returnUrl : void 0;
     try {
       const cfCreateRes = await fetch(`${cfConfig.baseUrl}/orders`, {
         method: "POST",
@@ -1617,37 +1816,85 @@ function createApiApp() {
         },
         body: JSON.stringify({
           order_id: pendingOrder.id,
-          order_amount: pendingOrder.totalAmountInr,
+          order_amount: Number(pendingOrder.totalAmountInr.toFixed(2)),
           order_currency: "INR",
           customer_details: {
-            customer_id: authCtx.uid.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48),
-            customer_name: pendingOrder.customerName,
+            customer_id: sanitizedCustomerId,
+            customer_name: sanitizedCustomerName,
             customer_email: pendingOrder.customerEmail,
-            customer_phone: sanitizedPhone.length === 10 ? sanitizedPhone : "9876543210"
+            customer_phone: sanitizedPhone
           },
-          order_meta: {
-            return_url: typeof returnUrl === "string" && returnUrl.startsWith("http") ? returnUrl : void 0
-          },
-          order_note: pendingOrder.itemSummary.slice(0, 200)
+          ...validReturnUrl ? {
+            order_meta: {
+              return_url: validReturnUrl
+            }
+          } : {},
+          order_note: sanitizedNote
         })
       });
-      const cfData = await cfCreateRes.json();
-      if (!cfCreateRes.ok || !cfData.payment_session_id) {
+      const rawResponseText = await cfCreateRes.text();
+      let cfData = {};
+      try {
+        cfData = JSON.parse(rawResponseText);
+      } catch {
+      }
+      const paymentSessionId = String(cfData.payment_session_id || "").trim();
+      const realCashfreeOrderId = cfData.cf_order_id !== void 0 && cfData.cf_order_id !== null ? String(cfData.cf_order_id).trim() : "";
+      if (!cfCreateRes.ok || !paymentSessionId || !realCashfreeOrderId) {
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, "failed");
+        const safeCfDetails = [
+          cfData.message,
+          cfData.code ? `(code: ${cfData.code})` : "",
+          cfData.type ? `[${cfData.type}]` : ""
+        ].filter(Boolean).join(" ").trim();
         res.status(502).json({
-          error: cfData.message || "Failed to initialize payment session with Cashfree Payment Gateway.",
-          order: pendingOrder
+          checkoutInitialized: false,
+          cashfreeMode: cfConfig.mode,
+          error: safeCfDetails ? `Cashfree checkout initialization failed (HTTP ${cfCreateRes.status} in ${cfConfig.mode} mode): ${safeCfDetails}` : `Cashfree checkout initialization failed (HTTP ${cfCreateRes.status} in ${cfConfig.mode} mode). Please verify your Cashfree API credentials and environment mode.`
+        });
+        return;
+      }
+      if (cfData.order_id && String(cfData.order_id).trim() !== pendingOrder.id) {
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, "failed");
+        res.status(502).json({
+          checkoutInitialized: false,
+          error: "Cashfree returned a mismatched merchant order_id."
+        });
+        return;
+      }
+      try {
+        pendingOrder = await saveCashfreeOrderIdInSupabase({
+          orderId: pendingOrder.id,
+          cashfreeOrderId: realCashfreeOrderId
+        });
+      } catch (saveErr) {
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, "failed");
+        res.status(503).json({
+          checkoutInitialized: false,
+          error: saveErr instanceof Error ? saveErr.message : "Failed to store Cashfree cf_order_id in Supabase before checkout."
+        });
+        return;
+      }
+      if (!pendingOrder.cashfreeOrderId || pendingOrder.cashfreeOrderId !== realCashfreeOrderId) {
+        await markOrderFailedOrCancelledInSupabase(pendingOrder, "failed");
+        res.status(503).json({
+          checkoutInitialized: false,
+          error: "Cashfree cf_order_id could not be verified in Supabase after saving."
         });
         return;
       }
       res.json({
+        checkoutInitialized: true,
         order: pendingOrder,
-        paymentSessionId: cfData.payment_session_id,
+        cashfreeOrderId: pendingOrder.cashfreeOrderId,
+        paymentSessionId,
         cashfreeMode: cfConfig.mode
       });
     } catch (err) {
+      await markOrderFailedOrCancelledInSupabase(pendingOrder, "failed");
       res.status(502).json({
-        error: err instanceof Error ? `Cashfree connection error: ${err.message}` : "Unable to reach Cashfree Payment Gateway.",
-        order: pendingOrder
+        checkoutInitialized: false,
+        error: err instanceof Error ? `Cashfree connection error (${cfConfig.mode} mode): ${err.message}` : "Unable to reach Cashfree Payment Gateway."
       });
     }
   };
@@ -1664,31 +1911,35 @@ function createApiApp() {
       res.status(400).json({ error: "Order ID is required for payment verification." });
       return;
     }
-    let fetched;
+    let order;
     try {
-      fetched = await getOrderFromFirestore(orderId);
+      order = await getOrderFromSupabase(orderId);
     } catch (err) {
       res.status(503).json({
         verified: false,
-        error: err instanceof Error ? err.message : "Privileged Firestore credentials are required to verify orders."
+        error: err instanceof Error ? err.message : "Server-side Supabase credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are required to verify orders."
       });
       return;
     }
-    if (!fetched) {
-      res.status(404).json({ error: "Order not found in Firestore." });
+    if (!order) {
+      res.status(404).json({ error: "Order not found in Supabase." });
       return;
     }
-    const { order } = fetched;
     const isCallerAdmin = canUserPerformAdminOperation(authCtx);
     if (order.userId !== authCtx.uid && !isCallerAdmin) {
       res.status(403).json({ error: "Forbidden: You do not own this order." });
       return;
     }
+    if (order.paymentStatus === "refunded" || order.paymentStatus === "cancelled") {
+      res.status(409).json({
+        verified: false,
+        error: `Order ${order.id} has status "${order.paymentStatus}" and cannot be fulfilled or reactivated.`,
+        order
+      });
+      return;
+    }
     if (order.paymentStatus === "paid" && order.entitlementsGranted) {
-      const { entitlements } = await listUserOrdersAndEntitlementsFromFirestore(
-        order.userId,
-        authCtx.idToken
-      );
+      const { entitlements } = await listUserOrdersAndEntitlementsFromSupabase(order.userId);
       res.json({
         verified: true,
         order,
@@ -1697,12 +1948,24 @@ function createApiApp() {
       });
       return;
     }
+    if (!order.cashfreeOrderId) {
+      res.status(400).json({
+        verified: false,
+        cashfreeOrderStatus: "MISSING_CF_ORDER_ID",
+        error: `Order ${order.id} never received a Cashfree checkout session (cashfree_order_id is NULL). Please start a new checkout from your cart.`,
+        order
+      });
+      return;
+    }
     const verification = await verifyOrderWithCashfreeServer(order);
     if (verification.verifiedPaid) {
       try {
-        const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
+        const fulfilled = await fulfillPaidOrderAtomicallyInSupabase({
           orderId: order.id,
-          paymentReference: verification.paymentReference,
+          cashfreeOrderId: verification.cashfreeOrderId,
+          cashfreePaymentId: verification.cashfreePaymentId,
+          verifiedAmountPaise: verification.verifiedAmountPaise,
+          verifiedCurrency: verification.verifiedCurrency,
           onDecrementPhysicalStock: decrementPhysicalCatalogStock
         });
         res.json({
@@ -1715,14 +1978,16 @@ function createApiApp() {
       } catch (err) {
         res.status(503).json({
           verified: false,
-          error: err instanceof Error ? err.message : "Failed to persist verified payment and entitlements in Firestore."
+          error: err instanceof Error ? err.message : "Failed to persist verified payment and entitlements in Supabase."
         });
         return;
       }
     }
     let updatedOrder = order;
     if (verification.cashfreeOrderStatus === "EXPIRED" || verification.cashfreeOrderStatus === "TERMINATED") {
-      updatedOrder = await markOrderFailedInFirestore(order);
+      updatedOrder = await markOrderFailedOrCancelledInSupabase(order, "failed");
+    } else if (verification.cashfreeOrderStatus === "USER_DROPPED") {
+      updatedOrder = await markOrderFailedOrCancelledInSupabase(order, "cancelled");
     }
     res.status(402).json({
       verified: false,
@@ -1746,40 +2011,62 @@ function createApiApp() {
         res.status(400).json({ error: "Missing Cashfree webhook signature headers." });
         return;
       }
-      const expectedSignature = crypto2.createHmac("sha256", cfConfig.secretKey).update(`${timestamp}${rawBody}`).digest("base64");
-      if (signature.length !== expectedSignature.length || !crypto2.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+      const expectedSignature = crypto.createHmac("sha256", cfConfig.secretKey).update(`${timestamp}${rawBody}`).digest("base64");
+      if (signature.length !== expectedSignature.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
         res.status(401).json({ error: "Invalid Cashfree webhook signature." });
         return;
       }
       const orderId = String(req.body?.data?.order?.order_id || "").trim();
-      let fetched;
+      if (!orderId) {
+        res.status(400).json({ error: "Missing order_id in Cashfree webhook payload." });
+        return;
+      }
+      let order;
       try {
-        fetched = await getOrderFromFirestore(orderId);
+        order = await getOrderFromSupabase(orderId);
       } catch (err) {
         res.status(503).json({
-          error: err instanceof Error ? err.message : "Firebase Service Account credentials are required to process webhooks."
+          error: err instanceof Error ? err.message : "Server-side Supabase credentials are required to process webhooks."
         });
         return;
       }
-      if (!fetched) {
-        res.status(404).json({ error: "Order not found in Firestore." });
+      if (!order) {
+        res.status(404).json({ error: "Order not found in Supabase." });
         return;
       }
-      const { order } = fetched;
-      const verification = await verifyOrderWithCashfreeServer(order);
-      if (verification.verifiedPaid) {
-        const fulfilled = await fulfillPaidOrderAtomicallyInFirestore({
-          orderId: order.id,
-          paymentReference: verification.paymentReference,
-          onDecrementPhysicalStock: decrementPhysicalCatalogStock
-        });
+      if (order.paymentStatus === "refunded" || order.paymentStatus === "cancelled") {
         res.json({
           received: true,
-          orderId: fulfilled.order.id,
-          paymentStatus: fulfilled.order.paymentStatus,
-          alreadyFulfilled: fulfilled.alreadyFulfilled
+          orderId: order.id,
+          paymentStatus: order.paymentStatus,
+          ignored: true
         });
         return;
+      }
+      const verification = await verifyOrderWithCashfreeServer(order);
+      if (verification.verifiedPaid) {
+        try {
+          const fulfilled = await fulfillPaidOrderAtomicallyInSupabase({
+            orderId: order.id,
+            cashfreeOrderId: verification.cashfreeOrderId,
+            cashfreePaymentId: verification.cashfreePaymentId,
+            verifiedAmountPaise: verification.verifiedAmountPaise,
+            verifiedCurrency: verification.verifiedCurrency,
+            onDecrementPhysicalStock: decrementPhysicalCatalogStock
+          });
+          res.json({
+            received: true,
+            orderId: fulfilled.order.id,
+            paymentStatus: fulfilled.order.paymentStatus,
+            alreadyFulfilled: fulfilled.alreadyFulfilled
+          });
+          return;
+        } catch (err) {
+          res.status(503).json({
+            error: err instanceof Error ? err.message : "Failed to fulfill verified webhook order in Supabase."
+          });
+          return;
+        }
       }
       res.json({ received: true, orderId: order.id, paymentStatus: order.paymentStatus });
     }
@@ -1790,14 +2077,19 @@ function createApiApp() {
       res.status(401).json({ error: "Authentication required." });
       return;
     }
-    const { orders, entitlements } = await listUserOrdersAndEntitlementsFromFirestore(
-      authCtx.uid,
-      authCtx.idToken
-    );
-    res.json({
-      orders,
-      entitlements
-    });
+    try {
+      const { orders, entitlements } = await listUserOrdersAndEntitlementsFromSupabase(
+        authCtx.uid
+      );
+      res.json({
+        orders,
+        entitlements
+      });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : "Unable to load customer orders and entitlements from Supabase."
+      });
+    }
   });
   app2.post("/api/content/signed-url", async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
@@ -1809,19 +2101,41 @@ function createApiApp() {
     }
     let isFreePreview = false;
     let lessonObj;
-    if (lessonId) {
-      lessonObj = serverLessons.get(String(lessonId));
-      if (lessonObj && lessonObj.isFreePreview) {
-        isFreePreview = true;
+    if (product.type === "course") {
+      if (lessonId) {
+        const candidate = serverLessons.get(String(lessonId));
+        if (candidate && candidate.courseId === product.id) {
+          lessonObj = candidate;
+        }
+      } else {
+        const courseLessons = Array.from(serverLessons.values()).filter((l) => l.courseId === product.id).sort((a, b) => a.orderIndex - b.orderIndex);
+        lessonObj = courseLessons[0];
       }
-    } else if (product.type === "course") {
-      const courseLessons = Array.from(serverLessons.values()).filter((l) => l.courseId === product.id).sort((a, b) => a.orderIndex - b.orderIndex);
-      lessonObj = courseLessons[0];
-      if (lessonObj && lessonObj.isFreePreview) {
-        isFreePreview = true;
+      if (!lessonObj) {
+        res.status(404).json({ error: "Requested course lesson not found." });
+        return;
+      }
+      isFreePreview = Boolean(lessonObj.isFreePreview);
+    }
+    const isAdminCaller = canUserPerformAdminOperation(authCtx);
+    let userEntitledProductIds = [];
+    if (!isFreePreview && !isAdminCaller) {
+      if (!authCtx?.uid) {
+        res.status(403).json({
+          error: "Access denied. Please sign in and purchase this item to access its content.",
+          reason: "unauthenticated"
+        });
+        return;
+      }
+      try {
+        userEntitledProductIds = await listUserEntitledProductIdsFromSupabase(authCtx.uid);
+      } catch (err) {
+        res.status(503).json({
+          error: err instanceof Error ? err.message : "Supabase entitlement verification is required to access paid content."
+        });
+        return;
       }
     }
-    const userEntitledProductIds = authCtx?.uid ? await listUserEntitledProductIdsFromFirestore(authCtx.uid, authCtx.idToken) : [];
     const accessCheck = canUserAccessProtectedContent({
       auth: authCtx,
       productId: product.id,
@@ -1835,10 +2149,25 @@ function createApiApp() {
       });
       return;
     }
+    if (!isFreePreview && !getSupabaseServerConfig()) {
+      res.status(503).json({
+        error: "Server-side Supabase credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are required to issue signed URLs for paid content."
+      });
+      return;
+    }
     const expiresAt = Date.now() + 15 * 60 * 1e3;
     const subjectUid = authCtx?.uid || "preview";
-    if (product.type === "course") {
-      const resolvedLessonId = lessonObj?.id || "default";
+    if (product.type === "course" && lessonObj) {
+      if (!lessonObj.isFreePreview) {
+        const verifiedFilePath = resolveVerifiedProtectedFilePath(lessonObj.videoStoragePath);
+        if (!verifiedFilePath) {
+          res.status(500).json({
+            error: "Course lesson does not have a valid private storage file path configured on the server."
+          });
+          return;
+        }
+      }
+      const resolvedLessonId = lessonObj.id;
       const streamToken = createSignedDownloadToken(
         subjectUid,
         `${product.id}:${resolvedLessonId}`,
@@ -1847,6 +2176,7 @@ function createApiApp() {
       res.json({
         allowed: true,
         reason: accessCheck.reason,
+        bucket: lessonObj.isFreePreview ? "public" : SUPABASE_PROTECTED_MEDIA_BUCKET,
         expiresAt: new Date(expiresAt).toISOString(),
         signedUrl: `/api/content/stream-video?productId=${encodeURIComponent(
           product.id
@@ -1860,6 +2190,7 @@ function createApiApp() {
     res.json({
       allowed: true,
       reason: accessCheck.reason,
+      bucket: SUPABASE_PROTECTED_MEDIA_BUCKET,
       expiresAt: new Date(expiresAt).toISOString(),
       signedUrl: `/api/content/download-book?productId=${encodeURIComponent(
         product.id
@@ -1875,38 +2206,64 @@ function createApiApp() {
       res.status(404).send("Course not found.");
       return;
     }
+    const lessonObj = serverLessons.get(lessonId);
+    if (!lessonObj || lessonObj.courseId !== product.id) {
+      res.status(404).send("Course lesson not found.");
+      return;
+    }
     const verification = verifySignedDownloadToken(token, `${productId}:${lessonId}`);
     if (!verification.valid || !verification.uid) {
       res.status(403).send("Forbidden: Valid signed video playback token required.");
       return;
     }
-    const lessonObj = serverLessons.get(lessonId);
-    const rawSource = lessonObj?.videoStoragePath || product.previewVideoUrl || "";
-    const storageObjPath = extractProtectedStorageObjectPath(rawSource);
-    if (storageObjPath && firebase_applet_config_default.storageBucket) {
-      await ensureLegacyProtectedStorageTokensRevoked();
-      const gcsSignedUrl = createGcsV4SignedReadUrl({
-        bucketName: firebase_applet_config_default.storageBucket,
-        objectPath: storageObjPath,
-        expiresInSeconds: 900
-      });
-      if (gcsSignedUrl) {
-        res.setHeader("Cache-Control", "private, no-store");
-        res.redirect(302, gcsSignedUrl);
-        return;
-      }
-      if (!lessonObj?.isFreePreview) {
+    if (lessonObj.isFreePreview) {
+      const previewUrl = lessonObj.videoStoragePath.startsWith("http") ? lessonObj.videoStoragePath : product.previewVideoUrl || "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+      res.setHeader("Cache-Control", "private, no-store");
+      res.redirect(302, previewUrl);
+      return;
+    }
+    const isAdminUid = serverAdminUids.has(verification.uid);
+    if (!isAdminUid) {
+      try {
+        const entitledIds = await listUserEntitledProductIdsFromSupabase(verification.uid);
+        if (!entitledIds.includes(product.id)) {
+          res.status(403).send("Forbidden: Your entitlement for this course is inactive or was refunded.");
+          return;
+        }
+      } catch (err) {
         res.status(503).send(
-          "Service Account credentials (FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY) are required to sign protected course video streams."
+          err instanceof Error ? err.message : "Supabase entitlement verification unavailable."
         );
         return;
       }
     }
-    const fallbackVideoUrl = rawSource.startsWith("http") && !rawSource.includes("firebasestorage.googleapis.com") ? rawSource : product.previewVideoUrl || "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
-    res.setHeader("Cache-Control", "private, no-store");
-    res.redirect(302, fallbackVideoUrl);
+    const verifiedObjectPath = resolveVerifiedProtectedFilePath(lessonObj.videoStoragePath);
+    if (!verifiedObjectPath) {
+      res.status(500).send("Invalid private storage file path configured for this lesson.");
+      return;
+    }
+    if (!getSupabaseServerConfig()) {
+      res.status(503).send(
+        "Server-side Supabase credentials (SUPABASE_URL and SUPABASE_SECRET_KEY) are required to stream protected course videos."
+      );
+      return;
+    }
+    try {
+      const supabaseSignedUrl = await createSupabaseSignedStorageUrl({
+        bucketName: SUPABASE_PROTECTED_MEDIA_BUCKET,
+        objectPath: verifiedObjectPath,
+        expiresInSeconds: 900
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      res.redirect(302, supabaseSignedUrl);
+      return;
+    } catch {
+      const fallbackUrl = product.previewVideoUrl || "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4";
+      res.setHeader("Cache-Control", "private, no-store");
+      res.redirect(302, fallbackUrl);
+    }
   });
-  app2.get("/api/content/download-book", (req, res) => {
+  app2.get("/api/content/download-book", async (req, res) => {
     const productId = String(req.query.productId || "");
     const token = String(req.query.token || "");
     const product = serverProducts.get(productId);
@@ -1919,6 +2276,42 @@ function createApiApp() {
       res.status(403).send("Forbidden: Valid signed download token required.");
       return;
     }
+    let entitledDownloadPath = `protected/books/${product.id}/${product.id}.pdf`;
+    const isAdminUid = serverAdminUids.has(verification.uid);
+    if (!isAdminUid) {
+      try {
+        const { entitlements } = await listUserOrdersAndEntitlementsFromSupabase(
+          verification.uid
+        );
+        const matchingEntitlement = entitlements.find((e) => e.productId === product.id);
+        if (!matchingEntitlement) {
+          res.status(403).send("Forbidden: Your entitlement for this book is inactive or was refunded.");
+          return;
+        }
+        const validated = resolveVerifiedProtectedFilePath(matchingEntitlement.downloadPath);
+        if (validated) {
+          entitledDownloadPath = validated;
+        }
+      } catch (err) {
+        res.status(503).send(
+          err instanceof Error ? err.message : "Supabase entitlement verification unavailable."
+        );
+        return;
+      }
+    }
+    if (getSupabaseServerConfig()) {
+      try {
+        const signedBookUrl = await createSupabaseSignedStorageUrl({
+          bucketName: SUPABASE_PROTECTED_MEDIA_BUCKET,
+          objectPath: entitledDownloadPath,
+          expiresInSeconds: 900
+        });
+        res.setHeader("Cache-Control", "private, no-store");
+        res.redirect(302, signedBookUrl);
+        return;
+      } catch {
+      }
+    }
     const content = [
       `====================================================================`,
       `SATYA'S EDUCATION \u2014 DIGITAL EDITION`,
@@ -1929,6 +2322,7 @@ function createApiApp() {
       `Language: ${product.language}`,
       `Format: ${product.coverType}`,
       `Licensed To Student UID: ${verification.uid}`,
+      `Private Storage Path: ${entitledDownloadPath}`,
       `Issued At: ${(/* @__PURE__ */ new Date()).toISOString()}`,
       `--------------------------------------------------------------------`,
       `SYNOPSIS & CHAPTER CONTENT:`,
@@ -1952,10 +2346,9 @@ function createApiApp() {
       });
       return;
     }
-    await ensureLegacyProtectedStorageTokensRevoked();
     let allOrders = [];
     try {
-      allOrders = await listAllOrdersFromFirestoreForAdmin();
+      allOrders = await listAllOrdersFromSupabaseForAdmin();
     } catch {
       allOrders = [];
     }
@@ -1978,6 +2371,37 @@ function createApiApp() {
       banners: Array.from(serverBanners.values())
     });
   });
+  app2.post("/api/admin/storage/signed-upload-url", async (req, res) => {
+    const authCtx = await resolveServerAuthContext(req);
+    if (!canUserPerformAdminOperation(authCtx)) {
+      res.status(403).json({
+        error: "Forbidden: Only verified administrators can upload protected course or book media."
+      });
+      return;
+    }
+    const { objectPath, fileSizeBytes } = req.body || {};
+    const numericSize = Number(fileSizeBytes || 0);
+    if (numericSize > SUPABASE_FREE_PLAN_MAX_FILE_BYTES) {
+      res.status(413).json({
+        error: `File size (${(numericSize / (1024 * 1024)).toFixed(
+          1
+        )} MB) exceeds the 50 MB Supabase Free plan limit. Please split the course recording into 15\u201325 minute lesson modules or HLS segments under 50 MB each.`
+      });
+      return;
+    }
+    try {
+      const signedUpload = await createSupabaseSignedUploadUrlForAdmin({
+        objectPath: String(objectPath || ""),
+        fileSizeBytes: numericSize,
+        bucketName: SUPABASE_PROTECTED_MEDIA_BUCKET
+      });
+      res.json(signedUpload);
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : "Unable to create signed upload URL for protected-media bucket."
+      });
+    }
+  });
   app2.post("/api/admin/action", async (req, res) => {
     const authCtx = await resolveServerAuthContext(req);
     if (!canUserPerformAdminOperation(authCtx)) {
@@ -1987,46 +2411,39 @@ function createApiApp() {
       return;
     }
     const { action, payload } = req.body || {};
-    if (action === "revoke_protected_storage_tokens") {
-      try {
-        const result = await revokeProtectedStorageDownloadTokens(
-          firebase_applet_config_default.storageBucket
-        );
-        legacyStorageTokensRevoked = true;
-        res.json({ status: "ok", ...result });
-        return;
-      } catch (err) {
-        res.status(503).json({
-          error: err instanceof Error ? err.message : "Unable to revoke protected storage tokens."
-        });
-        return;
-      }
-    }
     if (action === "upsert_product") {
       const prod = payload;
-      if (!prod || !prod.id || !prod.title || prod.priceInr < 0) {
-        res.status(400).json({ error: "Invalid product payload." });
+      if (!prod || !prod.id || !prod.title) {
+        res.status(400).json({ error: "Invalid course payload." });
+        return;
+      }
+      if (prod.type !== "course" || prod.format !== "recorded_course") {
+        res.status(400).json({ error: "Only online recorded courses are supported in this catalog." });
+        return;
+      }
+      if (typeof prod.priceInr !== "number" || !Number.isFinite(prod.priceInr) || prod.priceInr < MIN_COURSE_PRICE_INR) {
+        res.status(400).json({
+          error: `Course price must be at least \u20B9${MIN_COURSE_PRICE_INR.toLocaleString("en-IN")}.`
+        });
         return;
       }
       serverProducts.set(prod.id, {
         ...prod,
         updatedAt: (/* @__PURE__ */ new Date()).toISOString()
       });
-      if (prod.type === "course") {
-        const existingCourse = serverCourses.get(prod.id);
-        serverCourses.set(prod.id, {
-          id: prod.id,
-          productId: prod.id,
-          title: prod.title,
-          instructor: prod.authorOrInstructor,
-          language: prod.language,
-          level: prod.level,
-          duration: prod.duration,
-          introduction: existingCourse?.introduction || prod.description,
-          syllabusSummary: existingCourse?.syllabusSummary || "Module 1: Core Foundations \xB7 Module 2: Practical Implementation",
-          status: prod.status
-        });
-      }
+      const existingCourse = serverCourses.get(prod.id);
+      serverCourses.set(prod.id, {
+        id: prod.id,
+        productId: prod.id,
+        title: prod.title,
+        instructor: prod.authorOrInstructor,
+        language: prod.language,
+        level: prod.level,
+        duration: prod.duration,
+        introduction: existingCourse?.introduction || prod.description,
+        syllabusSummary: existingCourse?.syllabusSummary || "Module 1: Core Foundations \xB7 Module 2: Practical Implementation",
+        status: prod.status
+      });
       res.json({ status: "ok", product: serverProducts.get(prod.id) });
       return;
     }
@@ -2034,13 +2451,21 @@ function createApiApp() {
       const { productId, status, featured, stock, priceInr } = payload || {};
       const existing = serverProducts.get(String(productId || ""));
       if (!existing) {
-        res.status(404).json({ error: "Product not found." });
+        res.status(404).json({ error: "Course not found." });
         return;
       }
       if (status) existing.status = status;
       if (typeof featured === "boolean") existing.featured = featured;
       if (typeof stock === "number" && stock >= 0) existing.stock = stock;
-      if (typeof priceInr === "number" && priceInr >= 0) existing.priceInr = priceInr;
+      if (typeof priceInr === "number") {
+        if (priceInr < MIN_COURSE_PRICE_INR) {
+          res.status(400).json({
+            error: `Course price must be at least \u20B9${MIN_COURSE_PRICE_INR.toLocaleString("en-IN")}.`
+          });
+          return;
+        }
+        existing.priceInr = priceInr;
+      }
       existing.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
       serverProducts.set(existing.id, existing);
       res.json({ status: "ok", product: existing });
@@ -2051,6 +2476,16 @@ function createApiApp() {
       if (!lesson || !lesson.id || !lesson.courseId || !lesson.title) {
         res.status(400).json({ error: "Invalid lesson payload." });
         return;
+      }
+      if (!lesson.isFreePreview) {
+        const verifiedPath = resolveVerifiedProtectedFilePath(lesson.videoStoragePath);
+        if (!verifiedPath) {
+          res.status(400).json({
+            error: "Paid course lessons must specify a valid file path inside protected/courses/<courseId>/<filename>.mp4."
+          });
+          return;
+        }
+        lesson.videoStoragePath = verifiedPath;
       }
       serverLessons.set(lesson.id, lesson);
       res.json({ status: "ok", lesson });
@@ -2069,21 +2504,20 @@ function createApiApp() {
     if (action === "update_order") {
       const { orderId, shipmentStatus, paymentStatus } = payload || {};
       try {
-        const updated = await updateOrderByAdminInFirestore({
+        const updated = await updateOrderByAdminInSupabase({
           orderId: String(orderId || ""),
           shipmentStatus,
-          paymentStatus,
-          onDecrementPhysicalStock: decrementPhysicalCatalogStock
+          paymentStatus
         });
         if (!updated) {
-          res.status(404).json({ error: "Order not found in Firestore." });
+          res.status(404).json({ error: "Order not found in Supabase." });
           return;
         }
         res.json({ status: "ok", order: updated });
         return;
       } catch (err) {
         res.status(503).json({
-          error: err instanceof Error ? err.message : "Service Account credentials required to update orders."
+          error: err instanceof Error ? err.message : "Server-side Supabase credentials required to update orders."
         });
         return;
       }

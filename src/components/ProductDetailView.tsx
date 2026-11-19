@@ -127,7 +127,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
         className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-[#0A192F] mb-6"
       >
         <ArrowLeft className="w-4 h-4" />
-        <span>Back to Catalog</span>
+        <span>Back to Courses</span>
       </button>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
@@ -399,11 +399,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                   className="w-full py-3 px-4 bg-emerald-700 text-white text-sm font-semibold rounded-lg hover:bg-emerald-800 transition-colors flex items-center justify-center gap-2"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>
-                    {isCourse
-                      ? 'Purchased — Open Course Player'
-                      : 'Purchased — Open in My Books'}
-                  </span>
+                  <span>Enrolled — Open Course Player</span>
                 </button>
               ) : (
                 <div className="space-y-2">

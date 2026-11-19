@@ -16,8 +16,7 @@ export type StaticPageType =
   | 'privacy'
   | 'terms'
   | 'refund'
-  | 'cancellation'
-  | 'shipping';
+  | 'cancellation';
 
 interface StaticAndGuideViewsProps {
   page: StaticPageType;
@@ -44,7 +43,7 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
                 ABOUT {BUSINESS_COMPLIANCE_INFO.tradeName.toUpperCase()}
               </p>
               <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
-                Engineering Education, Authoritative Textbooks & Young Reader Storybooks
+                Online Software Engineering, Cloud & Agentic AI Academy
               </h1>
             </div>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
@@ -54,16 +53,16 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
           </div>
 
           <p className="text-sm sm:text-base text-slate-700 leading-relaxed">
-            <strong>{BUSINESS_COMPLIANCE_INFO.tradeName}</strong> is an independent educational publisher and learning
-            portal dedicated to delivering high-impact, practical software engineering instruction, authoritative
-            technical textbooks, and curiosity-building STEM storybooks for children across India.
+            <strong>{BUSINESS_COMPLIANCE_INFO.tradeName}</strong> is an independent online technology academy
+            dedicated to delivering high-impact, practical software engineering and artificial intelligence courses
+            for students and working professionals across India.
           </p>
 
           <p className="text-sm text-slate-600 leading-relaxed">
-            Our mission is to eliminate superficial learning by providing students and software engineers with deep,
-            conceptually rigorous courses in Python, Django, React, SQL, Cloud Architecture, DevOps, Generative AI, and
+            Our mission is to eliminate superficial learning by providing learners with deep, conceptually rigorous
+            recorded online courses in Python, Django, React, SQL, Cloud Architecture, DevOps, Generative AI, and
             Agentic AI. Each program is paired with downloadable source code, production architecture notes, and
-            hands-on lab exercises.
+            hands-on engineering projects.
           </p>
 
           {/* Three Core Pillars */}
@@ -74,8 +73,8 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
               </div>
               <h2 className="text-sm font-bold text-[#0A192F]">HD Recorded Courses</h2>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Structured self-paced video lessons in English and Telugu with lifetime access, downloadable code notes,
-                and real backend projects.
+                Structured self-paced video lessons in English and Telugu with instant lifetime access, downloadable
+                code notes, and real backend projects.
               </p>
             </div>
 
@@ -83,10 +82,10 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
               <div className="w-8 h-8 rounded-lg bg-[#0A192F] text-[#D4AF37] flex items-center justify-center font-bold text-xs">
                 02
               </div>
-              <h2 className="text-sm font-bold text-[#0A192F]">Engineering Textbooks</h2>
+              <h2 className="text-sm font-bold text-[#0A192F]">Production AI & Cloud Tracks</h2>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Comprehensive reference textbooks available in hardcover print and digital PDF formats, shipped directly
-                to students nationwide.
+                In-depth specialization tracks covering AWS DevOps, PostgreSQL optimization, Generative AI pipelines,
+                and deterministic Agentic AI systems.
               </p>
             </div>
 
@@ -94,10 +93,10 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
               <div className="w-8 h-8 rounded-lg bg-[#0A192F] text-[#D4AF37] flex items-center justify-center font-bold text-xs">
                 03
               </div>
-              <h2 className="text-sm font-bold text-[#0A192F]">STEM Children’s Books</h2>
+              <h2 className="text-sm font-bold text-[#0A192F]">Dedicated Student Portal</h2>
               <p className="text-xs text-slate-600 leading-relaxed">
-                Beautifully illustrated storybooks that introduce young minds to computational thinking, algorithms,
-                and scientific wonder.
+                Stream protected 1080p course recordings directly from your private Student Dashboard with saved module
+                completion tracking.
               </p>
             </div>
           </div>
@@ -108,8 +107,8 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
               Transparent Pricing & Direct Access
             </h2>
             <p className="text-xs text-amber-900 leading-relaxed">
-              All courses, books, and storybooks are priced transparently in <strong>Indian Rupees (INR - ₹)</strong> with
-              zero hidden recurring fees.
+              All online courses are priced transparently in <strong>Indian Rupees (INR - ₹)</strong> across
+              career-focused tiers starting from ₹10,000, with one-time enrollment and zero hidden recurring fees.
             </p>
           </div>
 
@@ -158,12 +157,12 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
           <div className="md:col-span-5 bg-[#0A192F] text-white rounded-2xl p-6 sm:p-8 space-y-6 shadow-md">
             <div>
               <p className="text-xs font-mono-tabular text-[#D4AF37] font-semibold tracking-wide uppercase">
-                STUDENT & BOOKSTORE SUPPORT
+                STUDENT & COURSE SUPPORT
               </p>
               <h1 className="font-display text-2xl sm:text-3xl font-bold mt-1">Contact Us</h1>
               <p className="text-xs text-slate-300 leading-relaxed mt-2">
-                Have questions about course syllabus details, bulk textbook orders, or order status? Reach out to our
-                publishing and student support desk.
+                Have questions about course syllabus details, enrollment assistance, or team training programs? Reach
+                out to our academic support desk.
               </p>
             </div>
 
@@ -329,7 +328,7 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
                 rows={4}
                 value={contactMessage}
                 onChange={(e) => setContactMessage(e.target.value)}
-                placeholder="Please describe your inquiry, book delivery question, or course syllabus query in detail..."
+                placeholder="Please describe your inquiry, course syllabus question, or enrollment assistance request in detail..."
                 required
                 className="w-full px-3.5 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-[#0A192F] focus:outline-none"
               />
@@ -379,61 +378,52 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
             <div>
               <h2 className="text-base font-bold text-[#0A192F] mb-1">1. Acceptance of Agreement</h2>
               <p>
-                By visiting, accessing, or purchasing from this website, you agree to be bound by these Terms and
-                Conditions, our Privacy Policy, Return & Refund Policy, and Cancellation Policy. If you do not agree
-                with any part of these terms, you must refrain from using our website and services.
+                By visiting, accessing, or enrolling on this website, you agree to be bound by these Terms and
+                Conditions, our Privacy Policy, Refund Policy, and Cancellation Policy. If you do not agree with any
+                part of these terms, you must refrain from using our website and services.
               </p>
             </div>
 
             <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">2. Educational Services & Digital Access</h2>
+              <h2 className="text-base font-bold text-[#0A192F] mb-1">2. Online Course Access & License</h2>
               <p>
-                {BUSINESS_COMPLIANCE_INFO.tradeName} provides online recorded technology courses, digital reference
-                books (e-books/PDFs), and physical educational textbooks and storybooks. All courses and digital books
-                purchased grant the registered student a personal, non-exclusive, non-transferable license for
-                individual educational use. Account sharing, commercial resale, or public broadcasting of our video
-                lessons is strictly prohibited.
+                {BUSINESS_COMPLIANCE_INFO.tradeName} exclusively provides online recorded technology courses and
+                accompanying lesson notes. Every enrolled course grants the registered student a personal,
+                non-exclusive, non-transferable license for individual educational use. Account sharing, commercial
+                resale, or public broadcasting of our video lessons is strictly prohibited.
               </p>
             </div>
 
             <div>
               <h2 className="text-base font-bold text-[#0A192F] mb-1">3. User Accounts and Security</h2>
               <p>
-                To access purchased courses, dashboard tools, and digital books, users can sign in to their student
-                account. You are responsible for maintaining the confidentiality of your login credentials and for all
-                activities that occur under your account.
+                To access enrolled courses and dashboard tools, users must sign in to their student account. You are
+                responsible for maintaining the confidentiality of your login credentials and for all activities that
+                occur under your account.
               </p>
             </div>
 
             <div>
               <h2 className="text-base font-bold text-[#0A192F] mb-1">4. Pricing & Currency</h2>
               <p>
-                All prices on this website are listed in <strong>Indian Rupees (INR - ₹)</strong> and are inclusive of
-                applicable taxes unless explicitly indicated otherwise.
+                All course fees on this website are listed in <strong>Indian Rupees (INR - ₹)</strong> and are
+                inclusive of applicable taxes unless explicitly indicated otherwise. Access to enrolled online courses
+                is delivered digitally and instantaneously upon verified payment confirmation.
               </p>
             </div>
 
             <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">5. Physical Book Orders & Delivery</h2>
+              <h2 className="text-base font-bold text-[#0A192F] mb-1">5. Intellectual Property Rights</h2>
               <p>
-                Physical educational textbooks and children’s storybooks are dispatched via recognized Indian courier
-                partners within 24–48 business hours and delivered within 4–7 business days across India. Orders of
-                ₹999 or above qualify for free standard shipping.
-              </p>
-            </div>
-
-            <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">6. Intellectual Property Rights</h2>
-              <p>
-                All course curriculum, recorded video lessons, textbook manuscripts, diagrams, storybook artwork,
-                software source code, and website branding are the exclusive intellectual property of{' '}
+                All course curriculum, recorded video lessons, architecture diagrams, lesson notes, software source
+                code, and website branding are the exclusive intellectual property of{' '}
                 <strong>{BUSINESS_COMPLIANCE_INFO.legalName}</strong> and{' '}
                 <strong>{BUSINESS_COMPLIANCE_INFO.tradeName}</strong>, protected under the Copyright Act, 1957 of India.
               </p>
             </div>
 
             <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">7. Governing Law & Jurisdiction</h2>
+              <h2 className="text-base font-bold text-[#0A192F] mb-1">6. Governing Law & Jurisdiction</h2>
               <p>
                 These Terms and Conditions shall be governed by and construed in accordance with the laws of India. Any
                 dispute, controversy, or claim arising out of or relating to these terms shall be subject to the
@@ -477,18 +467,14 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
           <div className="space-y-4">
             <div>
               <h2 className="text-base font-bold text-[#0A192F] mb-1">1. Information We Collect</h2>
-              <p>When you register, enroll in a course, or purchase a textbook on our platform, we collect:</p>
+              <p>When you register or enroll in an online course on our platform, we collect:</p>
               <ul className="list-disc pl-5 mt-1.5 space-y-1 text-xs text-slate-600">
                 <li>
                   <strong>Personal Identity Details:</strong> Full Name, Email Address, and Phone Number.
                 </li>
                 <li>
-                  <strong>Shipping Details (for physical book orders):</strong> Recipient Name, Street Address, City,
-                  State, and Postal PIN Code.
-                </li>
-                <li>
-                  <strong>Order & Entitlement History:</strong> Purchased course IDs, textbook order IDs, and lesson
-                  completion progress.
+                  <strong>Enrollment & Learning Progress:</strong> Enrolled course IDs, verified order references, and
+                  lesson completion progress.
                 </li>
               </ul>
             </div>
@@ -496,9 +482,9 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
             <div>
               <h2 className="text-base font-bold text-[#0A192F] mb-1">2. How We Use Your Information</h2>
               <ul className="list-disc pl-5 mt-1.5 space-y-1 text-xs text-slate-600">
-                <li>To grant instant access to purchased video courses and digital books on your dashboard.</li>
-                <li>To dispatch and deliver physical hardcover textbooks to your shipping address.</li>
-                <li>To provide dedicated student and bookstore customer support.</li>
+                <li>To grant instant digital access to enrolled online video courses in your Student Dashboard.</li>
+                <li>To save your module completion status and deliver syllabus updates.</li>
+                <li>To provide dedicated student enrollment and technical support.</li>
               </ul>
             </div>
 
@@ -529,21 +515,21 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
         <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-10 space-y-6 text-sm text-slate-700 leading-relaxed shadow-xs">
           <div>
             <p className="text-xs font-mono-tabular uppercase tracking-wider text-[#B48A1E] font-semibold">
-              TRANSPARENT STORE POLICY
+              TRANSPARENT ENROLLMENT POLICY
             </p>
             <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
-              Return & Refund Policy
+              Refund Policy
             </h1>
             <p className="text-xs text-slate-500 mt-1">
-              Official return window, duration, and refund mode guidelines for {BUSINESS_COMPLIANCE_INFO.tradeName}.
+              Official refund window, eligibility, and settlement guidelines for {BUSINESS_COMPLIANCE_INFO.tradeName}.
             </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs">
             <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
-              <span className="text-slate-500 font-medium block">Return & Refund Duration</span>
+              <span className="text-slate-500 font-medium block">Refund Window</span>
               <span className="font-bold text-[#0A192F] text-sm block">7 Calendar Days</span>
-              <span className="text-[11px] text-slate-500">From delivery or purchase date</span>
+              <span className="text-[11px] text-slate-500">From date of course enrollment</span>
             </div>
             <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
               <span className="text-slate-500 font-medium block">Refund Mode</span>
@@ -560,31 +546,17 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
           <div className="space-y-4 pt-2">
             <div>
               <h2 className="text-base font-bold text-[#0A192F] mb-1">
-                1. Physical Textbooks & Storybooks (Return & Replacement)
+                1. Online Recorded Courses Refund Eligibility
               </h2>
               <p>
-                <strong>Duration:</strong> Customers may report damaged, misprinted, or defective physical books within{' '}
-                <strong>{BUSINESS_COMPLIANCE_INFO.returnDurationDays} days of delivery</strong>.
-              </p>
-              <p className="mt-1.5">
-                If your book arrives with physical transit damage, torn binding, missing pages, or incorrect titles,
-                contact us with your Order ID and photographic evidence for a free replacement or 100% full refund.
-              </p>
-            </div>
-
-            <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">
-                2. Digital Recorded Courses & E-Books (Refund Policy)
-              </h2>
-              <p>
-                <strong>Duration:</strong> Digital course refund requests must be submitted within{' '}
+                <strong>Duration:</strong> Online course refund requests must be submitted within{' '}
                 <strong>{BUSINESS_COMPLIANCE_INFO.returnDurationDays} days of enrollment</strong>, provided less than 20%
                 of the total course video curriculum has been viewed.
               </p>
             </div>
 
             <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">3. How to Request a Refund</h2>
+              <h2 className="text-base font-bold text-[#0A192F] mb-1">2. How to Request a Refund</h2>
               <p>
                 Send an email to{' '}
                 <a href={`mailto:${BUSINESS_COMPLIANCE_INFO.supportEmail}`} className="text-[#0A192F] font-semibold underline">
@@ -603,150 +575,60 @@ export const StaticAndGuideViews: React.FC<StaticAndGuideViewsProps> = ({ page }
   /* -------------------------------------------------------------------------- */
   /* TAB 6: CANCELLATION POLICY                                                 */
   /* -------------------------------------------------------------------------- */
-  if (page === 'cancellation') {
-    return (
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-10 space-y-6 text-sm text-slate-700 leading-relaxed shadow-xs">
-          <div>
-            <p className="text-xs font-mono-tabular uppercase tracking-wider text-[#B48A1E] font-semibold">
-              ORDER MANAGEMENT POLICY
-            </p>
-            <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
-              Cancellation Policy
-            </h1>
-            <p className="text-xs text-slate-500 mt-1">
-              Clear timelines, duration, and cancellation procedure for {BUSINESS_COMPLIANCE_INFO.tradeName}.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs">
-            <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
-              <span className="text-slate-500 font-medium block">Cancellation Window</span>
-              <span className="font-bold text-[#0A192F] text-sm block">Within 24 Hours</span>
-              <span className="text-[11px] text-slate-500">Or prior to warehouse dispatch</span>
-            </div>
-            <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
-              <span className="text-slate-500 font-medium block">Cancellation Fee</span>
-              <span className="font-bold text-emerald-700 text-sm block">₹0 (Zero Charges)</span>
-              <span className="text-[11px] text-slate-500">100% full refund on eligible orders</span>
-            </div>
-            <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
-              <span className="text-slate-500 font-medium block">Refund Settlement</span>
-              <span className="font-bold text-[#0A192F] text-sm block">5 to 7 Business Days</span>
-              <span className="text-[11px] text-slate-500">Credited to original source</span>
-            </div>
-          </div>
-
-          <div className="space-y-4 pt-2">
-            <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">
-                1. Physical Textbook & Storybook Order Cancellation
-              </h2>
-              <p>
-                Orders for physical printed books can be cancelled within{' '}
-                <strong>{BUSINESS_COMPLIANCE_INFO.cancellationDurationHours} hours of order placement</strong>, or
-                prior to the package being dispatched from our publishing fulfillment center, whichever occurs first.
-              </p>
-            </div>
-
-            <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">
-                2. Digital Course Registration Cancellation
-              </h2>
-              <p>
-                Course enrollments can be cancelled within{' '}
-                <strong>{BUSINESS_COMPLIANCE_INFO.cancellationDurationHours} hours of purchase</strong>, provided zero
-                video lessons have been streamed or downloaded.
-              </p>
-            </div>
-
-            <div>
-              <h2 className="text-base font-bold text-[#0A192F] mb-1">3. How to Submit a Cancellation Request</h2>
-              <p>
-                Email{' '}
-                <a href={`mailto:${BUSINESS_COMPLIANCE_INFO.supportEmail}`} className="text-[#0A192F] font-semibold underline">
-                  {BUSINESS_COMPLIANCE_INFO.supportEmail}
-                </a>{' '}
-                with the subject <strong>“Order Cancellation - [Your Order ID]”</strong> or call{' '}
-                <strong>{BUSINESS_COMPLIANCE_INFO.supportPhone}</strong>.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  /* -------------------------------------------------------------------------- */
-  /* TAB 7: SHIPPING & DELIVERY POLICY                                          */
-  /* -------------------------------------------------------------------------- */
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
       <div className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-10 space-y-6 text-sm text-slate-700 leading-relaxed shadow-xs">
         <div>
           <p className="text-xs font-mono-tabular uppercase tracking-wider text-[#B48A1E] font-semibold">
-            DOMESTIC FULFILLMENT & LOGISTICS
+            ENROLLMENT MANAGEMENT POLICY
           </p>
           <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
-            Shipping & Delivery Policy (Physical Books)
+            Cancellation Policy
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Nationwide delivery guidelines for {BUSINESS_COMPLIANCE_INFO.tradeName}.
+            Clear timelines, duration, and cancellation procedure for {BUSINESS_COMPLIANCE_INFO.tradeName}.
           </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs">
           <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
-            <span className="text-slate-500 font-medium block">Dispatch Window</span>
-            <span className="font-bold text-[#0A192F] text-sm block">24 to 48 Hours</span>
-            <span className="text-[11px] text-slate-500">From order confirmation</span>
+            <span className="text-slate-500 font-medium block">Cancellation Window</span>
+            <span className="font-bold text-[#0A192F] text-sm block">Within 24 Hours</span>
+            <span className="text-[11px] text-slate-500">Before streaming paid lessons</span>
           </div>
           <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
-            <span className="text-slate-500 font-medium block">Delivery Timeline</span>
-            <span className="font-bold text-[#0A192F] text-sm block">4 to 7 Business Days</span>
-            <span className="text-[11px] text-slate-500">Across serviceable Indian pin codes</span>
+            <span className="text-slate-500 font-medium block">Cancellation Fee</span>
+            <span className="font-bold text-emerald-700 text-sm block">₹0 (Zero Charges)</span>
+            <span className="text-[11px] text-slate-500">100% full refund on eligible enrollments</span>
           </div>
           <div className="p-3 bg-white border border-slate-200 rounded-lg space-y-1">
-            <span className="text-slate-500 font-medium block">Free Shipping</span>
-            <span className="font-bold text-[#0A192F] text-sm block">Orders ₹999 & Above</span>
-            <span className="text-[11px] text-slate-500">Flat ₹79 fee on smaller orders</span>
+            <span className="text-slate-500 font-medium block">Refund Settlement</span>
+            <span className="font-bold text-[#0A192F] text-sm block">5 to 7 Business Days</span>
+            <span className="text-[11px] text-slate-500">Credited to original source</span>
           </div>
         </div>
 
         <div className="space-y-4 pt-2">
           <div>
-            <h2 className="text-base font-bold text-[#0A192F] mb-1">1. Dispatch & Transit Timeline</h2>
+            <h2 className="text-base font-bold text-[#0A192F] mb-1">
+              1. Online Course Enrollment Cancellation
+            </h2>
             <p>
-              All physical hardcover educational textbooks and children’s storybooks are carefully packaged and
-              dispatched from our publishing fulfillment hub within <strong>24 to 48 business hours</strong> of order
-              confirmation. Standard delivery across India typically takes <strong>4 to 7 business days</strong>.
+              Online course enrollments can be cancelled within{' '}
+              <strong>{BUSINESS_COMPLIANCE_INFO.cancellationDurationHours} hours of purchase</strong>, provided zero
+              paid video lessons have been streamed or downloaded.
             </p>
           </div>
 
           <div>
-            <h2 className="text-base font-bold text-[#0A192F] mb-1">2. Shipping Charges</h2>
-            <ul className="list-disc pl-5 mt-1.5 space-y-1 text-xs text-slate-600">
-              <li>
-                <strong>Free Shipping:</strong> All book orders with a cart subtotal of <strong>₹999 or above</strong>{' '}
-                qualify for 100% free delivery across India.
-              </li>
-              <li>
-                <strong>Standard Flat Shipping:</strong> Physical book orders below ₹999 incur a nominal flat shipping
-                and handling fee of <strong>₹79</strong>.
-              </li>
-              <li>
-                <strong>Digital Courses & E-Books:</strong> Digital products have zero shipping fees and are delivered
-                instantly online.
-              </li>
-            </ul>
-          </div>
-
-          <div>
-            <h2 className="text-base font-bold text-[#0A192F] mb-1">3. Courier Partners & Tracking</h2>
+            <h2 className="text-base font-bold text-[#0A192F] mb-1">2. How to Submit a Cancellation Request</h2>
             <p>
-              We partner with reputable domestic courier services including India Post Speed Post, Blue Dart, DTDC,
-              and Delhivery. As soon as your order is dispatched, a consignment tracking number and status are
-              displayed in your Student Dashboard.
+              Email{' '}
+              <a href={`mailto:${BUSINESS_COMPLIANCE_INFO.supportEmail}`} className="text-[#0A192F] font-semibold underline">
+                {BUSINESS_COMPLIANCE_INFO.supportEmail}
+              </a>{' '}
+              with the subject <strong>“Order Cancellation - [Your Order ID]”</strong> or call{' '}
+              <strong>{BUSINESS_COMPLIANCE_INFO.supportPhone}</strong>.
             </p>
           </div>
         </div>

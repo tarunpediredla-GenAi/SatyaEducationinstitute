@@ -102,6 +102,21 @@ export const BUSINESS_COMPLIANCE_INFO = {
 
 const ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
+export const MIN_COURSE_PRICE_INR = 10000;
+
+export type CoursePriceTierFilter = 'all' | '10k' | '20k' | '50k';
+
+export function matchesCoursePriceTier(
+  priceInr: number,
+  tier: CoursePriceTierFilter
+): boolean {
+  if (tier === 'all') return true;
+  if (tier === '10k') return priceInr >= 10000 && priceInr < 20000;
+  if (tier === '20k') return priceInr >= 20000 && priceInr < 50000;
+  if (tier === '50k') return priceInr >= 50000;
+  return true;
+}
+
 export function isValidDocumentId(id: unknown): id is string {
   return typeof id === 'string' && id.length >= 1 && id.length <= 128 && ID_REGEX.test(id);
 }

@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import firebaseConfig from '../firebase-applet-config.json';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
+  MIN_COURSE_PRICE_INR,
   calculateVerifiedCartSummary,
   canUserAccessProtectedContent,
   canUserPerformAdminOperation,
@@ -793,7 +794,7 @@ export function createApiApp() {
         }, ${shippingAddress.state || ''} - ${shippingAddress.postalCode} (${
           shippingAddress.phone || customerPhone || ''
         })`
-      : 'Digital Delivery (My Courses & My Books Library)';
+      : 'Digital Delivery (Student Dashboard — My Courses)';
 
     const itemSummary = verifiedCart.items
       .map((i) => `${i.title} x${i.quantity} (₹${i.lineTotalInr})`)
@@ -1658,31 +1659,39 @@ export function createApiApp() {
 
     if (action === 'upsert_product') {
       const prod = payload as CatalogProduct;
-      if (!prod || !prod.id || !prod.title || prod.priceInr < 0) {
-        res.status(400).json({ error: 'Invalid product payload.' });
+      if (!prod || !prod.id || !prod.title) {
+        res.status(400).json({ error: 'Invalid course payload.' });
+        return;
+      }
+      if (prod.type !== 'course' || prod.format !== 'recorded_course') {
+        res.status(400).json({ error: 'Only online recorded courses are supported in this catalog.' });
+        return;
+      }
+      if (typeof prod.priceInr !== 'number' || !Number.isFinite(prod.priceInr) || prod.priceInr < MIN_COURSE_PRICE_INR) {
+        res.status(400).json({
+          error: `Course price must be at least ₹${MIN_COURSE_PRICE_INR.toLocaleString('en-IN')}.`,
+        });
         return;
       }
       serverProducts.set(prod.id, {
         ...prod,
         updatedAt: new Date().toISOString(),
       });
-      if (prod.type === 'course') {
-        const existingCourse = serverCourses.get(prod.id);
-        serverCourses.set(prod.id, {
-          id: prod.id,
-          productId: prod.id,
-          title: prod.title,
-          instructor: prod.authorOrInstructor,
-          language: prod.language,
-          level: prod.level,
-          duration: prod.duration,
-          introduction: existingCourse?.introduction || prod.description,
-          syllabusSummary:
-            existingCourse?.syllabusSummary ||
-            'Module 1: Core Foundations · Module 2: Practical Implementation',
-          status: prod.status,
-        });
-      }
+      const existingCourse = serverCourses.get(prod.id);
+      serverCourses.set(prod.id, {
+        id: prod.id,
+        productId: prod.id,
+        title: prod.title,
+        instructor: prod.authorOrInstructor,
+        language: prod.language,
+        level: prod.level,
+        duration: prod.duration,
+        introduction: existingCourse?.introduction || prod.description,
+        syllabusSummary:
+          existingCourse?.syllabusSummary ||
+          'Module 1: Core Foundations · Module 2: Practical Implementation',
+        status: prod.status,
+      });
       res.json({ status: 'ok', product: serverProducts.get(prod.id) });
       return;
     }
@@ -1691,13 +1700,21 @@ export function createApiApp() {
       const { productId, status, featured, stock, priceInr } = payload || {};
       const existing = serverProducts.get(String(productId || ''));
       if (!existing) {
-        res.status(404).json({ error: 'Product not found.' });
+        res.status(404).json({ error: 'Course not found.' });
         return;
       }
       if (status) existing.status = status;
       if (typeof featured === 'boolean') existing.featured = featured;
       if (typeof stock === 'number' && stock >= 0) existing.stock = stock;
-      if (typeof priceInr === 'number' && priceInr >= 0) existing.priceInr = priceInr;
+      if (typeof priceInr === 'number') {
+        if (priceInr < MIN_COURSE_PRICE_INR) {
+          res.status(400).json({
+            error: `Course price must be at least ₹${MIN_COURSE_PRICE_INR.toLocaleString('en-IN')}.`,
+          });
+          return;
+        }
+        existing.priceInr = priceInr;
+      }
       existing.updatedAt = new Date().toISOString();
       serverProducts.set(existing.id, existing);
       res.json({ status: 'ok', product: existing });

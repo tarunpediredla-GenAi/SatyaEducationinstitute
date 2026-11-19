@@ -97,7 +97,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
   onLogout,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    'courses' | 'books' | 'orders' | 'addresses' | 'wishlist' | 'profile'
+    'courses' | 'orders' | 'wishlist' | 'profile'
   >('courses');
 
   const entitledProductIds = new Set(entitlements.map((e) => e.productId));
@@ -337,9 +337,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
         {(
           [
             { id: 'courses', label: `My Courses (${myCourses.length})` },
-            { id: 'books', label: `My Digital Books (${myDigitalBooks.length})` },
             { id: 'orders', label: `Orders (${orders.length})` },
-            { id: 'addresses', label: `Addresses (${addresses.length})` },
             { id: 'wishlist', label: `Wishlist (${wishlistIds.length})` },
             { id: 'profile', label: 'Profile' },
           ] as const
@@ -497,62 +495,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
         </div>
       )}
 
-      {/* TAB 2: My Digital Books */}
-      {activeTab === 'books' && (
-        <div className="space-y-6">
-          {downloadStatus && (
-            <div
-              role="status"
-              className="p-4 rounded-xl bg-slate-900 text-white text-xs font-mono-tabular"
-            >
-              {downloadStatus}
-            </div>
-          )}
-
-          {myDigitalBooks.length === 0 ? (
-            <div className="bg-white border border-slate-200 rounded-xl p-10 text-center">
-              <h2 className="font-display text-lg font-bold text-[#0A192F]">
-                No Digital Books Unlocked Yet
-              </h2>
-              <p className="text-sm text-slate-600 mt-1">
-                Purchased digital textbooks and illustrated storybooks appear here with direct
-                download links.
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {myDigitalBooks.map((book) => (
-                <div
-                  key={book.id}
-                  className="bg-white border border-slate-200 rounded-xl p-5 flex flex-col justify-between gap-4"
-                >
-                  <div>
-                    <p className="text-xs text-slate-500">
-                      <span>{book.category}</span>
-                      <span aria-hidden="true"> · </span>
-                      <span>{book.coverType}</span>
-                    </p>
-                    <h3 className="font-display text-lg font-bold text-[#0A192F] mt-1">
-                      {book.title}
-                    </h3>
-                    <p className="text-xs text-slate-600 mt-1">{book.shortDescription}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleBookDownload(book)}
-                    className="py-2.5 px-4 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 inline-flex items-center justify-center gap-2"
-                  >
-                    <Download className="w-4 h-4 text-[#D4AF37]" />
-                    <span>Download Digital Edition</span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* TAB 3: Order History */}
+      {/* TAB 2: Order History */}
       {activeTab === 'orders' && (
         <div className="space-y-4">
           {orders.length === 0 ? (
@@ -621,156 +564,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
         </div>
       )}
 
-      {/* TAB 4: Saved Delivery Addresses */}
-      {activeTab === 'addresses' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-7 space-y-4">
-            <h2 className="font-display text-lg font-bold text-[#0A192F]">
-              Saved Delivery Addresses
-            </h2>
-            {addresses.length === 0 ? (
-              <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-sm text-slate-600">
-                No saved delivery addresses yet. Add one using the form.
-              </div>
-            ) : (
-              addresses.map((addr) => (
-                <div
-                  key={addr.id}
-                  className="bg-white border border-slate-200 rounded-xl p-4 flex items-start justify-between gap-4"
-                >
-                  <div className="text-xs space-y-1">
-                    <div className="flex items-center gap-2">
-                      <MapPin className="w-4 h-4 text-[#B48A1E]" />
-                      <span className="font-bold text-slate-900">{addr.fullName}</span>
-                    </div>
-                    <p className="text-slate-600">{addr.line1}</p>
-                    <p className="text-slate-600">
-                      {addr.city}, {addr.state} - {addr.postalCode}
-                    </p>
-                    <p className="text-slate-500 font-mono-tabular">Phone: {addr.phone}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onDeleteAddress(addr.id)}
-                    className="text-xs text-red-600 hover:underline font-medium"
-                  >
-                    Delete
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!addrLine1.trim() || !addrCity.trim() || !addrPin.trim()) return;
-              onSaveAddress({
-                fullName: addrName.trim() || user.name,
-                phone: addrPhone.trim(),
-                line1: addrLine1.trim(),
-                line2: '',
-                city: addrCity.trim(),
-                state: addrState.trim() || 'Telangana',
-                postalCode: addrPin.trim(),
-                isDefault: addresses.length === 0,
-              });
-              setAddrLine1('');
-              setAddrCity('');
-              setAddrState('');
-              setAddrPin('');
-            }}
-            className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-5 space-y-3"
-          >
-            <h3 className="font-display text-base font-bold text-[#0A192F]">
-              Add Delivery Address
-            </h3>
-            <div>
-              <label htmlFor="dash-addr-name" className="block text-xs font-semibold mb-1">
-                Full Name
-              </label>
-              <input
-                id="dash-addr-name"
-                type="text"
-                value={addrName}
-                onChange={(e) => setAddrName(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-              />
-            </div>
-            <div>
-              <label htmlFor="dash-addr-phone" className="block text-xs font-semibold mb-1">
-                Phone Number
-              </label>
-              <input
-                id="dash-addr-phone"
-                type="text"
-                value={addrPhone}
-                onChange={(e) => setAddrPhone(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-              />
-            </div>
-            <div>
-              <label htmlFor="dash-addr-line1" className="block text-xs font-semibold mb-1">
-                Street Address
-              </label>
-              <input
-                id="dash-addr-line1"
-                type="text"
-                value={addrLine1}
-                onChange={(e) => setAddrLine1(e.target.value)}
-                placeholder="House No, Street, Landmark"
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-              />
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <label htmlFor="dash-addr-city" className="block text-xs font-semibold mb-1">
-                  City
-                </label>
-                <input
-                  id="dash-addr-city"
-                  type="text"
-                  value={addrCity}
-                  onChange={(e) => setAddrCity(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-              <div>
-                <label htmlFor="dash-addr-state" className="block text-xs font-semibold mb-1">
-                  State
-                </label>
-                <input
-                  id="dash-addr-state"
-                  type="text"
-                  value={addrState}
-                  onChange={(e) => setAddrState(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-              <div>
-                <label htmlFor="dash-addr-pin" className="block text-xs font-semibold mb-1">
-                  PIN Code
-                </label>
-                <input
-                  id="dash-addr-pin"
-                  type="text"
-                  value={addrPin}
-                  onChange={(e) => setAddrPin(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                />
-              </div>
-            </div>
-            <button
-              type="submit"
-              className="w-full py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800"
-            >
-              Save Address
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* TAB 5: Wishlist */}
+      {/* TAB 3: Wishlist */}
       {activeTab === 'wishlist' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {wishlistIds.length === 0 ? (
@@ -780,7 +574,7 @@ export const UserDashboardView: React.FC<UserDashboardViewProps> = ({
                 Your Wishlist is Empty
               </h2>
               <p className="text-sm text-slate-600 mt-1">
-                Save courses, engineering books, or storybooks to revisit them later.
+                Save online courses to revisit and enroll in them later.
               </p>
             </div>
           ) : (

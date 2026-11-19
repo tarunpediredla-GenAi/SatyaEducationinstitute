@@ -34,8 +34,10 @@ import {
 } from 'lucide-react';
 import {
   BUSINESS_COMPLIANCE_INFO,
+  matchesCoursePriceTier,
   type CatalogProduct,
   type CourseLesson,
+  type CoursePriceTierFilter,
 } from './utils/commerceRules';
 import { auth, onAuthStateChanged, signOut } from './firebase';
 import { getClientAuthHeaders } from './utils/apiAuth';
@@ -73,8 +75,6 @@ import { StaticAndGuideViews, type StaticPageType } from './components/StaticAnd
 type ActiveView =
   | 'home'
   | 'courses'
-  | 'books'
-  | 'storybooks'
   | 'catalog'
   | 'product-detail'
   | 'cart'
@@ -102,11 +102,9 @@ export default function App() {
   // Filters & Sorting
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
-  const [priceFilter, setPriceFilter] = useState<'all' | 'under500' | '500to1500' | 'over1500'>(
-    'all'
-  );
-  const [formatFilter, setFormatFilter] = useState<
-    'all' | 'recorded_course' | 'digital_book' | 'physical_book'
+  const [priceFilter, setPriceFilter] = useState<CoursePriceTierFilter>('all');
+  const [levelFilter, setLevelFilter] = useState<
+    'all' | 'Beginner' | 'Intermediate' | 'Advanced'
   >('all');
   const [sortBy, setSortBy] = useState<'featured' | 'price-asc' | 'price-desc' | 'title'>(
     'featured'
@@ -224,14 +222,14 @@ export default function App() {
   }, [user?.uid]);
 
   const publishedProducts = useMemo(
-    () => products.filter((p) => p.status === 'published'),
+    () => products.filter((p) => p.status === 'published' && p.type === 'course'),
     [products]
   );
 
   const spotlightProducts = useMemo(() => {
     const picks = [
       publishedProducts.find((p) => p.id === 'course-python-mastery'),
-      publishedProducts.find((p) => p.id === 'book-django-architecture-print'),
+      publishedProducts.find((p) => p.id === 'course-react-typescript'),
       publishedProducts.find((p) => p.id === 'course-agentic-ai'),
     ].filter((x): x is CatalogProduct => Boolean(x));
     return picks.length > 0 ? picks : publishedProducts.slice(0, 3);
@@ -242,33 +240,19 @@ export default function App() {
   const filteredProducts = useMemo(() => {
     return publishedProducts
       .filter((prod) => {
-        if (activeView === 'courses' && prod.type !== 'course') return false;
-        if (activeView === 'books' && prod.type !== 'book') return false;
-        if (activeView === 'storybooks' && prod.type !== 'storybook') return false;
-
         if (selectedCategory !== 'All' && prod.category !== selectedCategory) {
           return false;
         }
 
-        if (formatFilter !== 'all') {
-          if (
-            formatFilter === 'physical_book' &&
-            prod.format !== 'physical_book' &&
-            prod.format !== 'hybrid_book'
-          ) {
-            return false;
-          } else if (
-            formatFilter !== 'physical_book' &&
-            prod.format !== formatFilter
-          ) {
+        if (levelFilter !== 'all') {
+          if (!prod.level.toLowerCase().includes(levelFilter.toLowerCase())) {
             return false;
           }
         }
 
-        if (priceFilter === 'under500' && prod.priceInr >= 500) return false;
-        if (priceFilter === '500to1500' && (prod.priceInr < 500 || prod.priceInr > 1500))
+        if (!matchesCoursePriceTier(prod.priceInr, priceFilter)) {
           return false;
-        if (priceFilter === 'over1500' && prod.priceInr <= 1500) return false;
+        }
 
         if (searchQuery.trim().length > 0) {
           const q = searchQuery.toLowerCase();
@@ -289,9 +273,8 @@ export default function App() {
       });
   }, [
     publishedProducts,
-    activeView,
     selectedCategory,
-    formatFilter,
+    levelFilter,
     priceFilter,
     searchQuery,
     sortBy,
@@ -376,43 +359,34 @@ export default function App() {
               product={product}
               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
             />
-            {/* Format & Type Tag Pill */}
-            <div className="absolute top-3 left-3 flex items-center gap-1.5">
-              <span className="px-2.5 py-1 rounded-full text-[10px] font-bold bg-[#0A192F]/90 text-[#D4AF37] backdrop-blur-xs shadow-sm uppercase tracking-wide">
-                {product.type === 'course'
-                  ? 'HD Course'
-                  : product.type === 'storybook'
-                  ? 'Storybook'
-                  : 'Book'}
-              </span>
-            </div>
-            {/* Wishlist Heart Action */}
-            <button
-              type="button"
-              aria-label={`Toggle wishlist for ${cleanTitle}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleToggleWishlist(product.id);
-              }}
-              className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/90 hover:bg-white text-slate-500 hover:text-red-500 flex items-center justify-center shadow-sm backdrop-blur-xs transition-colors"
-            >
-              <Heart
-                className={`w-4 h-4 ${
-                  isWishlisted ? 'fill-red-500 text-red-500' : ''
-                }`}
-              />
-            </button>
           </div>
 
           {/* Card Content */}
           <div className="p-5 space-y-2.5">
-            <div className="flex items-center justify-between text-xs text-slate-500">
-              <span className="font-medium text-[#B48A1E]">
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+              <span className="font-medium text-[#B48A1E] truncate">
                 {product.category} · {product.language}
               </span>
-              <span className="font-mono-tabular text-slate-600 font-medium">
-                {isPhysical ? `${product.stock} in stock` : 'Instant Access'}
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="font-mono-tabular text-slate-600 font-medium">
+                  Instant Access
+                </span>
+                <button
+                  type="button"
+                  aria-label={`Toggle wishlist for ${cleanTitle}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleToggleWishlist(product.id);
+                  }}
+                  className="w-7 h-7 rounded-full border border-slate-200 bg-slate-50 hover:bg-red-50 hover:border-red-200 text-slate-500 hover:text-red-500 flex items-center justify-center transition-colors"
+                >
+                  <Heart
+                    className={`w-3.5 h-3.5 ${
+                      isWishlisted ? 'fill-red-500 text-red-500' : ''
+                    }`}
+                  />
+                </button>
+              </div>
             </div>
 
             <h3 className="font-display text-base sm:text-[17px] font-bold text-[#0A192F] leading-snug line-clamp-2">
@@ -488,10 +462,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A]">
+    <div className="min-h-screen flex flex-col bg-[#F8FAFC] text-[#0F172A] overflow-x-clip">
       {/* Sticky Professional Navigation Header */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-xs px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto h-16 sm:h-[72px] flex items-center justify-between gap-3 sm:gap-4 lg:gap-6">
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-xs px-3 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto h-16 sm:h-[72px] flex items-center justify-between gap-2 sm:gap-4 lg:gap-6">
           {/* Brand Emblem & Wordmark */}
           <a
             href="#home"
@@ -499,19 +473,19 @@ export default function App() {
               e.preventDefault();
               setActiveView('home');
             }}
-            className="flex items-center gap-3 whitespace-nowrap shrink-0 group focus:outline-none"
+            className="flex items-center gap-2 sm:gap-3 whitespace-nowrap shrink-0 group focus:outline-none min-w-0"
           >
             <img
               src="/logo.png"
               alt="Satya's Education Logo"
-              className="w-10 h-10 sm:w-11 sm:h-11 object-contain rounded-xl shadow-xs group-hover:scale-105 transition-all bg-white p-0.5 border border-slate-200"
+              className="w-9 h-9 sm:w-11 sm:h-11 object-contain rounded-xl shadow-xs group-hover:scale-105 transition-all bg-white p-0.5 border border-slate-200 shrink-0"
             />
-            <div className="flex flex-col">
-              <span className="font-display text-lg sm:text-xl font-bold tracking-tight text-[#0A192F] group-hover:text-[#112240] transition-colors leading-none">
+            <div className="flex flex-col min-w-0">
+              <span className="font-display text-base sm:text-xl font-bold tracking-tight text-[#0A192F] group-hover:text-[#112240] transition-colors leading-none">
                 Satya’s Education
               </span>
-              <span className="text-[10px] uppercase font-semibold tracking-wider text-slate-500 mt-1 font-mono-tabular">
-                Technology Academy & Press
+              <span className="hidden sm:block text-[10px] uppercase font-semibold tracking-wider text-slate-500 mt-1 font-mono-tabular">
+                Online Technology Academy
               </span>
             </div>
           </a>
@@ -521,10 +495,8 @@ export default function App() {
             <ul className="flex items-center gap-1">
               {[
                 { id: 'home', label: 'Home' },
-                { id: 'courses', label: 'Courses' },
-                { id: 'books', label: 'Books' },
-                { id: 'storybooks', label: 'Storybooks' },
-                { id: 'catalog', label: 'Catalog' },
+                { id: 'courses', label: 'Online Courses' },
+                { id: 'catalog', label: 'Catalog & Tracks' },
                 ...(user ? [{ id: 'dashboard' as const, label: 'My Dashboard' }] : []),
                 ...(user?.role === 'admin'
                   ? [{ id: 'admin' as const, label: 'Admin Studio' }]
@@ -541,12 +513,7 @@ export default function App() {
                           setAuthModalOpen(true);
                           return;
                         }
-                        if (
-                          item.id === 'courses' ||
-                          item.id === 'books' ||
-                          item.id === 'storybooks' ||
-                          item.id === 'catalog'
-                        ) {
+                        if (item.id === 'courses' || item.id === 'catalog') {
                           setSelectedCategory('All');
                         }
                         setActiveView(item.id as ActiveView);
@@ -576,16 +543,11 @@ export default function App() {
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
-                  if (
-                    activeView !== 'catalog' &&
-                    activeView !== 'courses' &&
-                    activeView !== 'books' &&
-                    activeView !== 'storybooks'
-                  ) {
+                  if (activeView !== 'catalog' && activeView !== 'courses') {
                     setActiveView('catalog');
                   }
                 }}
-                placeholder="Search Python, AI, Books..."
+                placeholder="Search Python, Django, AI..."
                 className="w-full pl-8 pr-3 py-1.5 bg-slate-100/90 hover:bg-slate-100 focus:bg-white text-xs text-slate-900 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#0A192F] transition-all"
               />
             </div>
@@ -651,7 +613,7 @@ export default function App() {
                       setAuthModalMode('login');
                       setAuthModalOpen(true);
                     }}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 hover:text-[#0A192F] hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap"
+                    className="inline-flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 text-xs font-semibold text-slate-700 hover:text-[#0A192F] hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap"
                   >
                     <LogIn className="w-3.5 h-3.5 text-slate-500" />
                     <span>Log In</span>
@@ -662,7 +624,7 @@ export default function App() {
                       setAuthModalMode('register');
                       setAuthModalOpen(true);
                     }}
-                    className="inline-flex items-center gap-1 px-3 py-2 text-xs font-bold text-[#0A192F] bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] hover:brightness-105 active:scale-95 rounded-lg shadow-xs transition-all whitespace-nowrap"
+                    className="hidden sm:inline-flex items-center gap-1 px-3 py-2 text-xs font-bold text-[#0A192F] bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] hover:brightness-105 active:scale-95 rounded-lg shadow-xs transition-all whitespace-nowrap"
                   >
                     <span>Sign Up</span>
                   </button>
@@ -675,7 +637,7 @@ export default function App() {
               type="button"
               aria-label="Toggle mobile navigation menu"
               onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-              className="lg:hidden p-2 text-slate-700 hover:text-[#0A192F] rounded-lg border border-slate-200"
+              className="lg:hidden p-1.5 sm:p-2 text-slate-700 hover:text-[#0A192F] rounded-lg border border-slate-200"
             >
               {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
@@ -692,13 +654,13 @@ export default function App() {
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <input
                 type="search"
-                aria-label="Mobile search courses and books"
+                aria-label="Mobile search online courses"
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                   if (activeView !== 'catalog') setActiveView('catalog');
                 }}
-                placeholder="Search Python, Django, React, AI, or books..."
+                placeholder="Search Python, Django, React, AWS, or AI courses..."
                 className="w-full pl-9 pr-3 py-2 bg-slate-50 text-xs border border-slate-200 rounded-lg"
               />
             </div>
@@ -706,10 +668,8 @@ export default function App() {
             <ul className="grid grid-cols-1 sm:grid-cols-2 gap-1">
               {[
                 { id: 'home', label: 'Home' },
-                { id: 'courses', label: 'Technology Courses' },
-                { id: 'books', label: 'Educational Books' },
-                { id: 'storybooks', label: 'Storybooks' },
-                { id: 'catalog', label: 'Full Catalog & Filters' },
+                { id: 'courses', label: 'Online Technology Courses' },
+                { id: 'catalog', label: 'Full Course Catalog & Filters' },
                 ...(user ? [{ id: 'dashboard' as const, label: 'My Dashboard & Profile' }] : []),
                 ...(user?.role === 'admin'
                   ? [{ id: 'admin' as const, label: 'Admin Studio' }]
@@ -833,20 +793,19 @@ export default function App() {
                     <div className="space-y-5">
                       <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-[#D4AF37]/15 text-[#F3E5AB] border border-[#D4AF37]/35 shadow-sm">
                         <Sparkles className="w-3.5 h-3.5 text-[#D4AF37]" />
-                        <span className="tracking-wide">SATYA’S EDUCATION · ACADEMY & PUBLISHING</span>
+                        <span className="tracking-wide">SATYA’S EDUCATION · ONLINE TECHNOLOGY ACADEMY</span>
                       </div>
                       <h1 className="font-display text-3xl sm:text-4xl lg:text-[46px] font-bold leading-[1.14] tracking-tight text-white">
                         Master Modern{' '}
                         <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#FDE047] via-[#D4AF37] to-[#F59E0B]">
-                          Software Engineering, AI
+                          Software Engineering, Cloud
                         </span>{' '}
-                        & Reading Foundations.
+                        & Agentic AI Online.
                       </h1>
                       <p className="text-sm sm:text-base text-slate-300 max-w-2xl leading-relaxed">
-                        Self-paced HD course recordings in Python, Django, React, Cloud & Agentic
-                        AI, paired with authoritative engineering textbooks and illustrated
-                        children’s storybooks. Instant digital access and tracked hardcover delivery
-                        across India.
+                        Self-paced HD recorded online courses in Python, Django, React, AWS DevOps,
+                        SQL & Agentic AI. Built with structured syllabi, public free preview
+                        lessons, production code notes, and instant lifetime dashboard access.
                       </p>
                       <div className="flex flex-wrap items-center gap-3 pt-1">
                         <button
@@ -855,15 +814,15 @@ export default function App() {
                           className="px-6 py-3.5 bg-gradient-to-r from-[#D4AF37] to-[#F3E5AB] text-[#0A192F] text-sm font-bold rounded-xl hover:brightness-105 active:scale-95 transition-all inline-flex items-center gap-2 whitespace-nowrap shadow-lg shadow-[#D4AF37]/20"
                         >
                           <Play className="w-4 h-4 fill-current" />
-                          <span>Explore Technology Courses</span>
+                          <span>Explore Online Courses</span>
                         </button>
                         <button
                           type="button"
-                          onClick={() => setActiveView('books')}
+                          onClick={() => setActiveView('catalog')}
                           className="px-6 py-3.5 bg-white/10 hover:bg-white/15 text-white border border-white/20 text-sm font-semibold rounded-xl active:scale-95 transition-all inline-flex items-center gap-2 whitespace-nowrap backdrop-blur-xs"
                         >
-                          <BookOpen className="w-4 h-4 text-[#D4AF37]" />
-                          <span>Browse Books & Storybooks</span>
+                          <GraduationCap className="w-4 h-4 text-[#D4AF37]" />
+                          <span>Filter by Track & Price</span>
                         </button>
                       </div>
                     </div>
@@ -871,7 +830,7 @@ export default function App() {
                     {/* Technology Categories Interactive Filter Strip */}
                     <div className="pt-5 border-t border-white/10">
                       <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">
-                        EXPLORE 11 TECHNOLOGY & PUBLISHING TRACKS:
+                        EXPLORE 11 ONLINE TECHNOLOGY COURSE TRACKS:
                       </p>
                       <div className="flex flex-wrap gap-2">
                         {categories.map((cat) => (
@@ -891,14 +850,14 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Right Column (5 cols): Interactive Featured Course & Hardcover Book Showcase */}
+                  {/* Right Column (5 cols): Interactive Featured Online Course Showcase */}
                   {currentSpotlight && (
                     <div className="lg:col-span-5 flex flex-col justify-between bg-gradient-to-b from-[#0F223D]/95 to-[#0A182E]/95 border border-[#D4AF37]/35 rounded-2xl p-5 sm:p-6 shadow-2xl backdrop-blur-md space-y-4">
                       {/* Interactive Spotlight Selector Tabs */}
                       <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-3">
                         <span className="text-[11px] font-bold text-[#D4AF37] uppercase tracking-wider flex items-center gap-1.5">
                           <span className="w-2 h-2 rounded-full bg-[#D4AF37] animate-pulse" />
-                          FEATURED SPOTLIGHT
+                          FEATURED COURSES
                         </span>
                         <div className="flex items-center gap-1 bg-black/30 p-1 rounded-lg">
                           {spotlightProducts.map((item, idx) => (
@@ -957,7 +916,7 @@ export default function App() {
                               onClick={() => handleOpenProductDetail(currentSpotlight.id)}
                               className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-lg transition-colors whitespace-nowrap"
                             >
-                              {currentSpotlight.type === 'course' ? 'Free Preview' : 'Inspect Book'}
+                              Free Preview
                             </button>
                             <button
                               type="button"
@@ -988,23 +947,23 @@ export default function App() {
                   </div>
                   <div className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-4 flex items-start gap-3.5 transition-colors">
                     <div className="w-8 h-8 rounded-lg bg-[#D4AF37]/15 border border-[#D4AF37]/30 flex items-center justify-center shrink-0 mt-0.5">
-                      <BookOpen className="w-4 h-4 text-[#D4AF37]" />
+                      <Zap className="w-4 h-4 text-[#D4AF37]" />
                     </div>
                     <div>
-                      <p className="font-semibold text-white">Digital & Print Editions</p>
+                      <p className="font-semibold text-white">Instant Lifetime Access</p>
                       <p className="text-slate-300 mt-1 leading-relaxed">
-                        Signed 15-minute PDF downloads and sewn hardcover books.
+                        Stream 1080p modules and code notes immediately inside your dashboard.
                       </p>
                     </div>
                   </div>
                   <div className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-4 flex items-start gap-3.5 transition-colors">
                     <div className="w-8 h-8 rounded-lg bg-[#D4AF37]/15 border border-[#D4AF37]/30 flex items-center justify-center shrink-0 mt-0.5">
-                      <Truck className="w-4 h-4 text-[#D4AF37]" />
+                      <GraduationCap className="w-4 h-4 text-[#D4AF37]" />
                     </div>
                     <div>
-                      <p className="font-semibold text-white">Tracked Delivery Across India</p>
+                      <p className="font-semibold text-white">Career-Ready Tiers</p>
                       <p className="text-slate-300 mt-1 leading-relaxed">
-                        Live physical stock verification and free shipping on orders ₹999+.
+                        Focused ₹10k workshops, ₹20k mastery tracks, and ₹50k flagship programs.
                       </p>
                     </div>
                   </div>
@@ -1015,7 +974,7 @@ export default function App() {
                     <div>
                       <p className="font-semibold text-white">Direct INR Checkout</p>
                       <p className="text-slate-300 mt-1 leading-relaxed">
-                        Transparent pricing in Indian Rupees with instant course & e-book access.
+                        Transparent one-time pricing in Indian Rupees via Cashfree UPI & Cards.
                       </p>
                     </div>
                   </div>
@@ -1023,17 +982,17 @@ export default function App() {
               </div>
             </section>
 
-            {/* Section 2: Featured Courses, Technical Books & Storybooks Grid */}
+            {/* Section 2: Featured Online Courses Grid */}
             <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 space-y-14">
               {/* Featured Technology Courses */}
               <div>
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
                   <div>
                     <p className="text-xs font-mono-tabular text-[#B48A1E] font-semibold">
-                      01. HD VIDEO RECORDINGS · FREE PREVIEW LESSONS
+                      01. HD VIDEO RECORDINGS · ₹10,000 · ₹20,000 · ₹50,000 TIERS
                     </p>
                     <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
-                      Featured Technology Courses
+                      Featured Online Technology Courses
                     </h2>
                   </div>
                   <button
@@ -1041,53 +1000,13 @@ export default function App() {
                     onClick={() => setActiveView('courses')}
                     className="text-xs font-semibold text-[#0A192F] hover:underline inline-flex items-center gap-1"
                   >
-                    <span>Explore All {publishedProducts.filter((p) => p.type === 'course').length} Courses</span>
+                    <span>Explore All {publishedProducts.length} Online Courses</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {publishedProducts
-                    .filter((p) => p.type === 'course')
-                    .slice(0, 3)
-                    .map(renderProductCard)}
-                </div>
-              </div>
-
-              {/* Featured Educational Books & Storybooks */}
-              <div className="pt-10 border-t border-slate-200">
-                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
-                  <div>
-                    <p className="text-xs font-mono-tabular text-[#B48A1E] font-semibold">
-                      02. PRINT HARDCOVER & DIGITAL PDF EDITIONS
-                    </p>
-                    <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
-                      Engineering Textbooks & Children’s Storybooks
-                    </h2>
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <button
-                      type="button"
-                      onClick={() => setActiveView('books')}
-                      className="text-xs font-semibold text-[#0A192F] hover:underline"
-                    >
-                      Engineering Books →
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveView('storybooks')}
-                      className="text-xs font-semibold text-[#0A192F] hover:underline"
-                    >
-                      Children’s Storybooks →
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {publishedProducts
-                    .filter((p) => p.type === 'book' || p.type === 'storybook')
-                    .slice(0, 3)
-                    .map(renderProductCard)}
+                  {publishedProducts.slice(0, 6).map(renderProductCard)}
                 </div>
               </div>
 
@@ -1095,7 +1014,7 @@ export default function App() {
               <div className="bg-white border border-slate-200/90 rounded-2xl p-6 sm:p-10 shadow-xs space-y-8">
                 <div className="text-center max-w-2xl mx-auto space-y-2">
                   <p className="text-xs font-mono-tabular text-[#B48A1E] font-semibold tracking-wider uppercase">
-                    03. INSTITUTIONAL RIGOR & HONEST VALUE
+                    02. INSTITUTIONAL RIGOR & HONEST VALUE
                   </p>
                   <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F]">
                     Why Engineers & Students Choose Satya’s Education
@@ -1120,13 +1039,13 @@ export default function App() {
 
                   <div className="p-5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-3 hover:shadow-md transition-shadow">
                     <div className="w-10 h-10 rounded-xl bg-[#0A192F] text-[#D4AF37] flex items-center justify-center">
-                      <BookOpen className="w-5 h-5 text-[#D4AF37]" />
+                      <Play className="w-5 h-5 text-[#D4AF37]" />
                     </div>
                     <h3 className="font-display font-bold text-base text-[#0A192F]">
-                      Authoritative Textbooks
+                      1080p Recorded Modules
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Comprehensive printed hardcover reference manuals and 15-minute signed digital PDFs with full code notes.
+                      Learn at your own pace with structured video modules, downloadable source code, and detailed architecture walkthroughs.
                     </p>
                   </div>
 
@@ -1135,10 +1054,10 @@ export default function App() {
                       <GraduationCap className="w-5 h-5 text-[#D4AF37]" />
                     </div>
                     <h3 className="font-display font-bold text-base text-[#0A192F]">
-                      Early STEM Curiosity
+                      Lifetime Portal Access
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Illustrated children’s storybooks designed to foster early computational thinking, algorithms, and logic.
+                      One-time enrollment unlocks permanent access to your course videos, future syllabus updates, and progress tracking.
                     </p>
                   </div>
 
@@ -1150,7 +1069,7 @@ export default function App() {
                       Transparent INR Pricing
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      All prices transparently in INR (₹) with instant course access and a 7-day refund guarantee.
+                      Clear ₹10,000, ₹20,000, and ₹50,000 course tiers in INR (₹) with instant access and a 7-day refund policy.
                     </p>
                   </div>
                 </div>
@@ -1160,13 +1079,13 @@ export default function App() {
               <div className="space-y-8">
                 <div className="text-center max-w-2xl mx-auto space-y-2">
                   <p className="text-xs font-mono-tabular text-[#B48A1E] font-semibold tracking-wider uppercase">
-                    04. STREAMLINED STUDENT JOURNEY
+                    03. STREAMLINED STUDENT JOURNEY
                   </p>
                   <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F]">
-                    How Learning at Satya’s Education Works
+                    How Online Learning at Satya’s Education Works
                   </h2>
                   <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    From free previews to lifetime dashboard access and tracked nationwide book delivery.
+                    From public free preview lessons to instant lifetime dashboard access across all enrolled modules.
                   </p>
                 </div>
 
@@ -1179,7 +1098,7 @@ export default function App() {
                       Discover & Watch Free Previews
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Browse courses, textbooks, and storybooks by technology track. Watch introductory lessons freely without creating an account.
+                      Browse online courses by technology track or program tier. Watch introductory lessons freely without creating an account.
                     </p>
                   </div>
 
@@ -1191,7 +1110,7 @@ export default function App() {
                       Direct Online Checkout
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Add items to your cart, apply coupons like <code className="font-mono-tabular font-bold text-[#0A192F]">SATYA20</code>, and complete your order in Indian Rupees.
+                      Add courses to your cart, apply coupons like <code className="font-mono-tabular font-bold text-[#0A192F]">SATYA20</code>, and complete enrollment securely in Indian Rupees.
                     </p>
                   </div>
 
@@ -1200,10 +1119,10 @@ export default function App() {
                       03
                     </div>
                     <h3 className="font-display font-bold text-base text-[#0A192F]">
-                      Learn in Dashboard & Receive Books
+                      Stream Instantly in Dashboard
                     </h3>
                     <p className="text-xs text-slate-600 leading-relaxed">
-                      Courses and digital books unlock immediately in your Student Dashboard. Hardcover textbooks are packaged and shipped with India-wide tracking.
+                      Enrolled courses unlock immediately inside your Student Dashboard with protected HD streaming and progress tracking.
                     </p>
                   </div>
                 </div>
@@ -1213,37 +1132,33 @@ export default function App() {
               <div className="bg-white border border-slate-200/90 rounded-2xl p-6 sm:p-10 shadow-xs space-y-6">
                 <div className="max-w-2xl space-y-2">
                   <p className="text-xs font-mono-tabular text-[#B48A1E] font-semibold tracking-wider uppercase">
-                    05. QUESTIONS & ANSWERS
+                    04. QUESTIONS & ANSWERS
                   </p>
                   <h2 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F]">
                     Frequently Asked Questions
                   </h2>
                   <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-                    Clear information on course access, physical deliveries, refunds, and payments.
+                    Clear information on online course access, pricing tiers, refunds, and payments.
                   </p>
                 </div>
 
                 <div className="space-y-3 divide-y divide-slate-100">
                   {[
                     {
-                      q: 'How do I access course recordings after purchasing?',
-                      a: 'As soon as your payment is confirmed, your enrolled course unlocks immediately inside your personal Student Dashboard. You receive lifetime access to all HD video recordings, syllabus updates, and downloadable source code repositories.',
+                      q: 'How do I access online course recordings after enrolling?',
+                      a: 'As soon as your payment is verified, your enrolled course unlocks immediately inside your personal Student Dashboard. You receive lifetime access to all HD video recordings, syllabus updates, and code notes.',
                     },
                     {
-                      q: 'How long does physical hardcover book delivery take across India?',
-                      a: 'Physical books are dispatched from our publishing fulfillment desk within 24 to 48 business hours. Delivery typically takes 4 to 7 business days across all serviceable postal PIN codes in India, handled via India Post or trusted domestic courier partners with tracking.',
+                      q: 'What are the course fee tiers on Satya’s Education?',
+                      a: 'We offer focused engineering workshops at ₹10,000, deep full-stack mastery tracks at ₹20,000, and comprehensive flagship AI & Systems Architect programs at ₹50,000—all one-time INR payments with no recurring subscriptions.',
                     },
                     {
                       q: 'What payment methods are supported on Satya’s Education?',
-                      a: 'Supported payment options include UPI (Google Pay, PhonePe, Paytm, BHIM), Indian Debit & Credit Cards (Visa, MasterCard, RuPay), and Net Banking across all major Indian banks.',
+                      a: 'Supported payment options include UPI (Google Pay, PhonePe, Paytm, BHIM), Indian Debit & Credit Cards (Visa, MasterCard, RuPay), and Net Banking across all major Indian banks via Cashfree.',
                     },
                     {
-                      q: 'What is your Return and Refund Policy?',
-                      a: 'We offer a 7-day return policy for physical books if received in damaged or defective condition, providing a free replacement or full refund. For digital courses, refund requests are honored within 7 days of purchase provided less than 20% of the video curriculum has been consumed.',
-                    },
-                    {
-                      q: 'Can I cancel an order after placing it?',
-                      a: 'Physical book orders can be cancelled within 24 hours of placement or prior to dispatch from our warehouse at zero cancellation charge. Full refunds are processed directly back to your original payment method within 5 to 7 business days.',
+                      q: 'What is your Refund and Cancellation Policy?',
+                      a: 'Online course enrollments can be cancelled within 24 hours if no paid lessons have been streamed, and refund requests are honored within 7 days of enrollment provided less than 20% of the video curriculum has been viewed.',
                     },
                   ].map((faq, idx) => {
                     const isOpen = openFaqIndex === idx;
@@ -1280,10 +1195,10 @@ export default function App() {
                     <span>ACADEMIC COUNSELING & SYLLABUS UPDATES</span>
                   </div>
                   <h2 className="font-display text-2xl sm:text-3xl font-bold leading-tight">
-                    Stay Updated on New Course Syllabus & Textbooks
+                    Stay Updated on New Online Courses & Syllabi
                   </h2>
                   <p className="text-xs sm:text-sm text-slate-300 leading-relaxed max-w-xl">
-                    Get notified when new engineering modules, Python 3.12 exercises, and children's STEM storybooks are published. No spam, ever.
+                    Get notified when new engineering modules, Python 3.12 labs, Cloud tracks, and Agentic AI programs are released. No spam, ever.
                   </p>
                   <div className="flex flex-wrap items-center gap-4 text-xs text-slate-300 pt-2">
                     <span className="flex items-center gap-1.5">
@@ -1340,29 +1255,22 @@ export default function App() {
           </div>
         )}
 
-        {/* VIEW 2: Catalog Views (Courses, Books, Storybooks, All Catalog) */}
-        {(activeView === 'courses' ||
-          activeView === 'books' ||
-          activeView === 'storybooks' ||
-          activeView === 'catalog') && (
+        {/* VIEW 2: Online Course Catalog Views */}
+        {(activeView === 'courses' || activeView === 'catalog') && (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-slate-200 pb-5">
               <div>
                 <p className="text-xs font-mono-tabular text-[#B48A1E] font-semibold">
-                  SATYA’S EDUCATION CATALOG
+                  SATYA’S EDUCATION · ONLINE COURSES
                 </p>
                 <h1 className="font-display text-2xl sm:text-3xl font-bold text-[#0A192F] mt-1">
                   {activeView === 'courses'
-                    ? 'Technology Course Recordings'
-                    : activeView === 'books'
-                    ? 'Educational & Engineering Books'
-                    : activeView === 'storybooks'
-                    ? 'Children’s Illustrated Storybooks'
-                    : 'Complete Course & Book Catalog'}
+                    ? 'Online Technology Course Recordings'
+                    : 'Complete Online Course Catalog'}
                 </h1>
               </div>
               <span className="text-xs text-slate-500 font-mono-tabular">
-                Showing {filteredProducts.length} item(s)
+                Showing {filteredProducts.length} course(s)
               </span>
             </div>
 
@@ -1370,7 +1278,7 @@ export default function App() {
             <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                 <SlidersHorizontal className="w-4 h-4 text-[#B48A1E]" />
-                <span>Filter by Technology or Publishing Category:</span>
+                <span>Filter by Technology Track:</span>
               </div>
               <div className="flex flex-wrap gap-1.5">
                 <button
@@ -1382,7 +1290,7 @@ export default function App() {
                       : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                   }`}
                 >
-                  All Categories
+                  All Tracks
                 </button>
                 {categories.map((cat) => (
                   <button
@@ -1406,50 +1314,44 @@ export default function App() {
                     htmlFor="filter-price-select"
                     className="block text-[11px] font-semibold text-slate-500 mb-1"
                   >
-                    Price Range (INR)
+                    Price Tier (INR)
                   </label>
                   <select
                     id="filter-price-select"
                     value={priceFilter}
                     onChange={(e) =>
-                      setPriceFilter(
-                        e.target.value as 'all' | 'under500' | '500to1500' | 'over1500'
-                      )
+                      setPriceFilter(e.target.value as CoursePriceTierFilter)
                     }
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
                   >
-                    <option value="all">All Prices</option>
-                    <option value="under500">Under ₹500</option>
-                    <option value="500to1500">₹500 – ₹1,500</option>
-                    <option value="over1500">Above ₹1,500</option>
+                    <option value="all">All Prices (₹10,000+)</option>
+                    <option value="10k">₹10,000 – ₹19,999</option>
+                    <option value="20k">₹20,000 – ₹49,999</option>
+                    <option value="50k">₹50,000 & Above</option>
                   </select>
                 </div>
 
                 <div>
                   <label
-                    htmlFor="filter-format-select"
+                    htmlFor="filter-level-select"
                     className="block text-[11px] font-semibold text-slate-500 mb-1"
                   >
-                    Delivery Format
+                    Course Level
                   </label>
                   <select
-                    id="filter-format-select"
-                    value={formatFilter}
+                    id="filter-level-select"
+                    value={levelFilter}
                     onChange={(e) =>
-                      setFormatFilter(
-                        e.target.value as
-                          | 'all'
-                          | 'recorded_course'
-                          | 'digital_book'
-                          | 'physical_book'
+                      setLevelFilter(
+                        e.target.value as 'all' | 'Beginner' | 'Intermediate' | 'Advanced'
                       )
                     }
                     className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg bg-white"
                   >
-                    <option value="all">All Formats</option>
-                    <option value="recorded_course">Recorded Video Courses</option>
-                    <option value="digital_book">Digital Books (PDF)</option>
-                    <option value="physical_book">Physical Hardcover Books</option>
+                    <option value="all">All Levels</option>
+                    <option value="Beginner">Beginner Friendly</option>
+                    <option value="Intermediate">Intermediate</option>
+                    <option value="Advanced">Advanced / Flagship</option>
                   </select>
                 </div>
 
@@ -1481,15 +1383,15 @@ export default function App() {
 
             {loadingCatalog ? (
               <div className="bg-white border border-slate-200 rounded-xl p-12 text-center text-sm text-slate-600">
-                Loading catalog items...
+                Loading online courses...
               </div>
             ) : filteredProducts.length === 0 ? (
               <div className="bg-white border border-slate-200 rounded-xl p-12 text-center space-y-3">
                 <h2 className="font-display text-lg font-bold text-[#0A192F]">
-                  No Matching Courses or Books Found
+                  No Matching Online Courses Found
                 </h2>
                 <p className="text-xs text-slate-600">
-                  Try clearing your search query or resetting the active category and price filters.
+                  Try clearing your search query or resetting the active track and price filters.
                 </p>
                 <button
                   type="button"
@@ -1497,7 +1399,7 @@ export default function App() {
                     setSearchQuery('');
                     setSelectedCategory('All');
                     setPriceFilter('all');
-                    setFormatFilter('all');
+                    setLevelFilter('all');
                   }}
                   className="px-4 py-2 bg-[#0A192F] text-white text-xs font-semibold rounded-lg"
                 >
@@ -1627,7 +1529,7 @@ export default function App() {
                 Log In to Access Your Student Dashboard
               </h2>
               <p className="text-sm text-slate-600">
-                Your purchased courses, lesson playback progress, digital books, and orders are
+                Your enrolled online courses, lesson playback progress, and order history are
                 private to your account.
               </p>
               <button
@@ -1662,8 +1564,7 @@ export default function App() {
           activeView === 'privacy' ||
           activeView === 'terms' ||
           activeView === 'refund' ||
-          activeView === 'cancellation' ||
-          activeView === 'shipping') && <StaticAndGuideViews page={activeView} />}
+          activeView === 'cancellation') && <StaticAndGuideViews page={activeView} />}
       </main>
 
       {/* Storefront Footer with Mandatory Compliance & Developer Attribution */}
@@ -1681,8 +1582,8 @@ export default function App() {
               </span>
             </div>
             <p className="text-slate-400 leading-relaxed">
-              Operated by <strong>{BUSINESS_COMPLIANCE_INFO.legalName}</strong>. Structured software engineering
-              courses, authoritative textbooks, and children’s STEM storybooks.
+              Operated by <strong>{BUSINESS_COMPLIANCE_INFO.legalName}</strong>. Online software engineering,
+              cloud architecture, and Agentic AI courses.
             </p>
             <div className="pt-2 text-[11px] text-slate-400 space-y-1">
               <p>
@@ -1699,7 +1600,7 @@ export default function App() {
           </div>
 
           <div className="space-y-2">
-            <h3 className="font-semibold text-[#D4AF37]">Catalog & Learning</h3>
+            <h3 className="font-semibold text-[#D4AF37]">Online Courses & Learning</h3>
             <ul className="space-y-1.5">
               <li>
                 <button
@@ -1707,25 +1608,16 @@ export default function App() {
                   onClick={() => setActiveView('courses')}
                   className="hover:text-white"
                 >
-                  Technology Courses
+                  Online Technology Courses
                 </button>
               </li>
               <li>
                 <button
                   type="button"
-                  onClick={() => setActiveView('books')}
+                  onClick={() => setActiveView('catalog')}
                   className="hover:text-white"
                 >
-                  Educational Textbooks
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  onClick={() => setActiveView('storybooks')}
-                  className="hover:text-white"
-                >
-                  Children’s Storybooks
+                  Full Course Catalog
                 </button>
               </li>
               <li>
@@ -1785,7 +1677,7 @@ export default function App() {
                   onClick={() => setActiveView('refund')}
                   className="hover:text-white"
                 >
-                  Return & Refund Policy
+                  Refund Policy
                 </button>
               </li>
               <li>
@@ -1795,15 +1687,6 @@ export default function App() {
                   className="hover:text-white"
                 >
                   Cancellation Policy
-                </button>
-              </li>
-              <li>
-                <button
-                  type="button"
-                  onClick={() => setActiveView('shipping')}
-                  className="hover:text-white"
-                >
-                  Shipping & Delivery Policy
                 </button>
               </li>
             </ul>

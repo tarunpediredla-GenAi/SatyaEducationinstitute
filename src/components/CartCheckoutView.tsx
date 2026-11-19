@@ -180,7 +180,7 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
       await onOrderCompleted();
       setOrderFeedback({
         orderId: verifyData.order.id,
-        message: `Cashfree payment verified for Order ${verifyData.order.id}! Your courses and digital books are now unlocked in your Student Dashboard.`,
+        message: `Cashfree payment verified for Order ${verifyData.order.id}! Your enrolled online courses are now unlocked in your Student Dashboard.`,
       });
     } catch (err) {
       setCheckoutError(
@@ -346,14 +346,14 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
         <div className="bg-white border border-slate-200 rounded-xl p-12 text-center max-w-xl mx-auto">
           <h2 className="font-display text-xl font-bold text-[#0A192F]">Your Cart is Empty</h2>
           <p className="text-sm text-slate-600 mt-2 mb-6">
-            Explore recorded technology courses, engineering handbooks, and illustrated storybooks.
+            Explore our recorded online technology courses in Python, Django, React, AWS Cloud, and Agentic AI.
           </p>
           <button
             type="button"
             onClick={onNavigateCatalog}
             className="px-5 py-2.5 bg-[#0A192F] text-white text-sm font-semibold rounded-lg hover:bg-slate-800 transition-colors inline-flex items-center gap-2"
           >
-            <span>Browse Full Catalog</span>
+            <span>Browse Online Courses</span>
             <ArrowRight className="w-4 h-4 text-[#D4AF37]" />
           </button>
         </div>
@@ -731,8 +731,8 @@ export const CartCheckoutView: React.FC<CartCheckoutViewProps> = ({
               <ShieldCheck className="w-4 h-4 text-[#B48A1E] shrink-0 mt-0.5" />
               <span>
                 Verified Fulfillment: Every order starts as <strong>pending</strong> and unlocks
-                courses or digital books only after our backend independently verifies payment
-                completion with Cashfree.
+                your online course recordings immediately after our backend independently verifies
+                payment completion with Cashfree.
               </span>
             </div>
           </div>

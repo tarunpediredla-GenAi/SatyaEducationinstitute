@@ -277,7 +277,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               SATYA’S EDUCATION
             </p>
             <p className="text-[11px] text-slate-500 font-medium">
-              Official Learning & Reading Portal
+              Official Online Learning Portal
             </p>
           </div>
         </div>
@@ -291,7 +291,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               : 'Reset Your Password'}
           </h2>
           <p className="text-sm text-slate-600 mt-1">
-            Access your purchased course recordings, digital books, and order tracking.
+            Access your enrolled online course recordings, lesson progress, and order history.
           </p>
         </div>
 

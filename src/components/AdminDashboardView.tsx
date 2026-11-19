@@ -17,12 +17,11 @@ import {
   Copy,
 } from 'lucide-react';
 import {
+  MIN_COURSE_PRICE_INR,
   canUserPerformAdminOperation,
   type CatalogProduct,
   type CourseLesson,
-  type ProductFormat,
   type ProductStatus,
-  type ProductType,
 } from '../utils/commerceRules';
 import {
   db,
@@ -63,7 +62,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [activeTab, setActiveTab] = useState<
     | 'overview'
     | 'courses'
-    | 'books'
     | 'storage'
     | 'categories'
     | 'orders'
@@ -75,25 +73,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
   const [storageAssets, setStorageAssets] = useState<UploadedStorageAsset[]>([]);
   const [uploadingLessonVideo, setUploadingLessonVideo] = useState(false);
   const [lessonUploadProgress, setLessonUploadProgress] = useState<number>(0);
-  const [uploadingBookFile, setUploadingBookFile] = useState(false);
-  const [bookUploadProgress, setBookUploadProgress] = useState<number>(0);
-  const [uploadedBookUrl, setUploadedBookUrl] = useState<string>('');
   const [uploadingCloudAsset, setUploadingCloudAsset] = useState(false);
   const [cloudUploadProgress, setCloudUploadProgress] = useState<number>(0);
   const [cloudFolder, setCloudFolder] = useState<
-    'protected/courses' | 'protected/books' | 'public/covers' | 'public/previews'
+    'protected/courses' | 'public/covers' | 'public/previews'
   >('protected/courses');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Add/Edit Product Form State
+  // Add/Edit Course Form State (minimum ₹10,000)
   const [prodTitle, setProdTitle] = useState('');
-  const [prodType, setProdType] = useState<ProductType>('course');
   const [prodCategory, setProdCategory] = useState('Python');
-  const [prodPrice, setProdPrice] = useState(1499);
-  const [prodOrigPrice, setProdOrigPrice] = useState(2499);
-  const [prodFormat, setProdFormat] = useState<ProductFormat>('recorded_course');
-  const [prodStock, setProdStock] = useState(50);
+  const [prodPrice, setProdPrice] = useState(10000);
+  const [prodOrigPrice, setProdOrigPrice] = useState(15000);
   const [prodLanguage, setProdLanguage] = useState('English');
   const [prodInstructor, setProdInstructor] = useState('Satya Narayana');
   const [prodDuration, setProdDuration] = useState('24 Hours');
@@ -116,7 +108,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
 
   // Add Category Form State
   const [catName, setCatName] = useState('');
-  const [catGroup, setCatGroup] = useState<'technology' | 'books' | 'storybooks'>('technology');
   const [catDesc, setCatDesc] = useState('');
 
   // Banner Form State
@@ -286,10 +277,9 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
           [
             { id: 'overview', label: 'Analytics & Summary' },
             { id: 'courses', label: 'Courses & Recordings' },
-            { id: 'books', label: 'Books, Storybooks & Stock' },
             { id: 'storage', label: `Firebase Storage (${storageAssets.length})` },
             { id: 'categories', label: `Categories (${categories.length})` },
-            { id: 'orders', label: `Orders & Shipments (${adminOrders.length})` },
+            { id: 'orders', label: `Orders & Payments (${adminOrders.length})` },
             { id: 'customers', label: `Customers (${uniqueCustomers.length})` },
             { id: 'banners', label: 'Banners & Featured' },
           ] as const
@@ -334,13 +324,13 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             </div>
 
             <div className="bg-white border border-slate-200 rounded-xl p-5">
-              <span className="text-xs text-slate-500">Active Catalog Products</span>
+              <span className="text-xs text-slate-500">Active Online Courses</span>
               <p className="font-mono-tabular text-2xl font-bold text-[#0A192F] mt-1">
                 {products.length}
               </p>
               <span className="text-[11px] text-slate-500 mt-1 block">
-                {products.filter((p) => p.type === 'course').length} Courses ·{' '}
-                {products.filter((p) => p.type !== 'course').length} Books & Storybooks
+                {products.filter((p) => p.status === 'published').length} Published ·{' '}
+                {lessons.length} Recorded Lessons
               </span>
             </div>
 
@@ -355,24 +345,23 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             </div>
           </div>
 
-          {/* Quick Catalog Inventory Table */}
+          {/* Quick Course Inventory Table */}
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
             <div className="p-5 border-b border-slate-200 flex items-center justify-between">
               <h2 className="font-display text-lg font-bold text-[#0A192F]">
-                Live Catalog Status & Inventory Control
+                Live Course Catalog & Pricing Control
               </h2>
               <span className="text-xs text-slate-500">
-                Publish, unpublish, archive, or adjust INR price & stock
+                Publish, unpublish, archive, or switch course fee tiers (₹10k / ₹20k / ₹50k)
               </span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-xs">
                 <thead>
                   <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
-                    <th className="py-3 px-4 font-semibold">Title</th>
-                    <th className="py-3 px-4 font-semibold">Type & Category</th>
+                    <th className="py-3 px-4 font-semibold">Course Title</th>
+                    <th className="py-3 px-4 font-semibold">Track</th>
                     <th className="py-3 px-4 font-semibold">Price (INR)</th>
-                    <th className="py-3 px-4 font-semibold">Stock</th>
                     <th className="py-3 px-4 font-semibold">Status</th>
                     <th className="py-3 px-4 font-semibold">Actions</th>
                   </tr>
@@ -384,15 +373,10 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         {prod.title}
                       </td>
                       <td className="py-3 px-4 text-slate-600">
-                        {prod.type} · {prod.category}
+                        {prod.category} · {prod.duration}
                       </td>
                       <td className="py-3 px-4 font-mono-tabular font-semibold">
                         ₹{prod.priceInr.toLocaleString('en-IN')}
-                      </td>
-                      <td className="py-3 px-4 font-mono-tabular">
-                        {prod.format === 'recorded_course' || prod.format === 'digital_book'
-                          ? 'Digital'
-                          : prod.stock}
                       </td>
                       <td className="py-3 px-4">
                         <span className="font-mono-tabular uppercase font-semibold text-slate-700">
@@ -400,7 +384,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                         </span>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           {(['published', 'draft', 'archived'] as ProductStatus[]).map((st) => (
                             <button
                               key={st}
@@ -422,22 +406,30 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                               {st === 'draft' ? 'Unpublish' : st}
                             </button>
                           ))}
-                          <button
-                            type="button"
-                            onClick={() =>
-                              executeAdminAction(
-                                'update_product_status',
-                                {
-                                  productId: prod.id,
-                                  priceInr: Math.max(99, Math.round(prod.priceInr * 0.9)),
-                                },
-                                `Applied 10% price reduction to "${prod.title}".`
-                              )
-                            }
-                            className="px-2 py-1 rounded text-[11px] font-semibold bg-[#D4AF37]/20 text-[#0A192F] hover:bg-[#D4AF37]/35 whitespace-nowrap"
-                          >
-                            -10% Price
-                          </button>
+                          {([10000, 20000, 50000] as const).map((tierPrice) => (
+                            <button
+                              key={tierPrice}
+                              type="button"
+                              disabled={prod.priceInr === tierPrice}
+                              onClick={() =>
+                                executeAdminAction(
+                                  'update_product_status',
+                                  {
+                                    productId: prod.id,
+                                    priceInr: tierPrice,
+                                  },
+                                  `Updated "${prod.title}" price to ₹${tierPrice.toLocaleString('en-IN')}.`
+                                )
+                              }
+                              className={`px-2 py-1 rounded text-[11px] font-semibold whitespace-nowrap ${
+                                prod.priceInr === tierPrice
+                                  ? 'bg-[#D4AF37] text-[#0A192F]'
+                                  : 'bg-[#D4AF37]/20 text-[#0A192F] hover:bg-[#D4AF37]/35'
+                              }`}
+                            >
+                              ₹{tierPrice / 1000}k
+                            </button>
+                          ))}
                         </div>
                       </td>
                     </tr>
@@ -467,8 +459,11 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 slug,
                 type: 'course',
                 category: prodCategory,
-                priceInr: Number(prodPrice) || 1499,
-                originalPriceInr: Number(prodOrigPrice) || 2499,
+                priceInr: Math.max(MIN_COURSE_PRICE_INR, Number(prodPrice) || 10000),
+                originalPriceInr: Math.max(
+                  Math.max(MIN_COURSE_PRICE_INR, Number(prodPrice) || 10000),
+                  Number(prodOrigPrice) || 15000
+                ),
                 language: prodLanguage.trim() || 'English',
                 format: 'recorded_course',
                 stock: 9999,
@@ -539,15 +534,36 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
               </div>
               <div>
                 <label htmlFor="admin-course-price" className="block text-xs font-semibold mb-1">
-                  Price (INR)
+                  Price (INR · Min ₹10,000)
                 </label>
                 <input
                   id="admin-course-price"
                   type="number"
+                  min={MIN_COURSE_PRICE_INR}
+                  step={1000}
                   value={prodPrice}
                   onChange={(e) => setProdPrice(Number(e.target.value))}
                   className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono-tabular"
                 />
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  {([10000, 20000, 50000] as const).map((tier) => (
+                    <button
+                      key={tier}
+                      type="button"
+                      onClick={() => {
+                        setProdPrice(tier);
+                        setProdOrigPrice(Math.round(tier * 1.3));
+                      }}
+                      className={`px-2 py-0.5 rounded text-[11px] font-mono-tabular font-semibold ${
+                        prodPrice === tier
+                          ? 'bg-[#0A192F] text-[#D4AF37]'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      ₹{tier.toLocaleString('en-IN')}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -816,271 +832,19 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </div>
       )}
 
-      {/* TAB 3: Add / Edit Educational Books, Storybooks & Physical Stock */}
-      {activeTab === 'books' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!prodTitle.trim()) return;
-              const slug = prodTitle
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '-')
-                .replace(/(^-|-$)/g, '');
-              const newBook: CatalogProduct = {
-                id: `${prodType}-${slug}-${Date.now().toString().slice(-4)}`,
-                title: prodTitle.trim(),
-                slug,
-                type: prodType === 'course' ? 'book' : prodType,
-                category: prodCategory,
-                priceInr: Number(prodPrice) || 599,
-                originalPriceInr: Number(prodOrigPrice) || 899,
-                language: prodLanguage.trim() || 'English',
-                format:
-                  prodFormat === 'recorded_course' ? 'physical_book' : prodFormat,
-                stock: Number(prodStock) || 25,
-                featured: true,
-                status: 'published',
-                authorOrInstructor: prodInstructor.trim() || 'Satya Narayana',
-                shortDescription:
-                  prodShortDesc.trim() ||
-                  'Authoritative educational edition available in physical or digital format.',
-                description:
-                  prodDesc.trim() ||
-                  'Complete reference book with structured chapters and exercises.',
-                coverType:
-                  prodFormat === 'digital_book'
-                    ? 'Digital PDF Edition'
-                    : 'Physical Hardcover Edition',
-                level: prodLevel.trim() || 'All Levels',
-                duration: prodDuration.trim() || '320 Pages',
-                previewVideoUrl: '',
-              };
-              executeAdminAction(
-                'upsert_product',
-                newBook,
-                `Book "${newBook.title}" added to catalog.`
-              );
-              setProdTitle('');
-            }}
-            className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-6 space-y-4"
-          >
-            <div className="flex items-center gap-2">
-              <BookOpen className="w-5 h-5 text-[#B48A1E]" />
-              <h2 className="font-display text-lg font-bold text-[#0A192F]">
-                Add Educational Book or Storybook
-              </h2>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label htmlFor="admin-book-type" className="block text-xs font-semibold mb-1">
-                  Catalog Type
-                </label>
-                <select
-                  id="admin-book-type"
-                  value={prodType === 'course' ? 'book' : prodType}
-                  onChange={(e) => setProdType(e.target.value as ProductType)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                >
-                  <option value="book">Educational / Technical Book</option>
-                  <option value="storybook">Children’s Storybook</option>
-                </select>
-              </div>
-              <div>
-                <label htmlFor="admin-book-format" className="block text-xs font-semibold mb-1">
-                  Format (Digital vs Physical)
-                </label>
-                <select
-                  id="admin-book-format"
-                  value={prodFormat === 'recorded_course' ? 'physical_book' : prodFormat}
-                  onChange={(e) => setProdFormat(e.target.value as ProductFormat)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                >
-                  <option value="physical_book">Physical Hardcover Book</option>
-                  <option value="digital_book">Digital Book (PDF / EPUB)</option>
-                  <option value="hybrid_book">Hybrid Bundle (Print + Digital)</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label htmlFor="admin-book-title" className="block text-xs font-semibold mb-1">
-                Book Title
-              </label>
-              <input
-                id="admin-book-title"
-                type="text"
-                value={prodTitle}
-                onChange={(e) => setProdTitle(e.target.value)}
-                placeholder="e.g. System Design & Cloud SQL Reference"
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-              />
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label htmlFor="admin-book-price" className="block text-xs font-semibold mb-1">
-                  Price (INR)
-                </label>
-                <input
-                  id="admin-book-price"
-                  type="number"
-                  value={prodPrice}
-                  onChange={(e) => setProdPrice(Number(e.target.value))}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg font-mono-tabular"
-                />
-              </div>
-              <div>
-                <label htmlFor="admin-book-stock" className="block text-xs font-semibold mb-1">
-                  Physical Stock
-                </label>
-                <input
-                  id="admin-book-stock"
-                  type="number"
-                  value={prodStock}
-                  onChange={(e) => setProdStock(Number(e.target.value))}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg font-mono-tabular"
-                />
-              </div>
-              <div>
-                <label htmlFor="admin-book-cat" className="block text-xs font-semibold mb-1">
-                  Category
-                </label>
-                <select
-                  id="admin-book-cat"
-                  value={prodCategory}
-                  onChange={(e) => setProdCategory(e.target.value)}
-                  className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-                >
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-semibold text-[#0A192F] flex items-center gap-1.5">
-                  <Cloud className="w-3.5 h-3.5 text-[#B48A1E]" />
-                  <span>Upload Digital Book (PDF/EPUB) or Cover to Firebase Storage</span>
-                </span>
-                {uploadingBookFile && (
-                  <span className="text-[11px] font-mono-tabular font-bold text-[#B48A1E]">
-                    {bookUploadProgress}%
-                  </span>
-                )}
-              </div>
-              <input
-                type="file"
-                accept=".pdf,.epub,image/*"
-                disabled={uploadingBookFile}
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file || !user) return;
-                  setUploadingBookFile(true);
-                  setBookUploadProgress(0);
-                  setErrorMessage(null);
-                  try {
-                    const uploaded = await uploadFileToFirebaseStorage({
-                      file,
-                      folder: file.type.startsWith('image/')
-                        ? 'public/covers'
-                        : 'protected/books',
-                      uploadedByUid: user.uid,
-                      isAdmin: true,
-                      onProgress: (pct) => setBookUploadProgress(pct),
-                    });
-                    setUploadedBookUrl(uploaded.downloadUrl);
-                    setStorageAssets((prev) => [uploaded, ...prev]);
-                    setStatusMessage(
-                      `Uploaded "${file.name}" to Firebase Storage (${uploaded.storagePath}).`
-                    );
-                  } catch (err) {
-                    setErrorMessage(
-                      err instanceof Error
-                        ? `Firebase Storage upload error: ${err.message}`
-                        : 'Firebase Storage upload failed.'
-                    );
-                  } finally {
-                    setUploadingBookFile(false);
-                  }
-                }}
-                className="block w-full text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-[#0A192F] file:text-white hover:file:bg-slate-800"
-              />
-              {uploadedBookUrl && (
-                <p className="text-[11px] font-mono-tabular text-emerald-700 truncate">
-                  Firebase Storage URL attached: {uploadedBookUrl}
-                </p>
-              )}
-            </div>
-
-            <button
-              type="submit"
-              disabled={uploadingBookFile}
-              className="w-full py-2.5 bg-[#0A192F] text-white text-xs font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50"
-            >
-              Publish Book / Storybook
-            </button>
-          </form>
-
-          {/* Physical Stock Manager */}
-          <div className="lg:col-span-6 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
-            <h3 className="font-display text-lg font-bold text-[#0A192F]">
-              Physical Book Warehouse Stock & Price Control
-            </h3>
-            <div className="divide-y divide-slate-200">
-              {products
-                .filter((p) => p.type !== 'course')
-                .map((book) => (
-                  <div
-                    key={book.id}
-                    className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                  >
-                    <div>
-                      <p className="text-xs font-bold text-slate-900">{book.title}</p>
-                      <p className="text-[11px] text-slate-500">
-                        Format: {book.format} · Price: ₹{book.priceInr} · Stock: {book.stock}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          executeAdminAction(
-                            'update_product_status',
-                            { productId: book.id, stock: book.stock + 10 },
-                            `Added +10 stock to "${book.title}".`
-                          )
-                        }
-                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded"
-                      >
-                        +10 Stock
-                      </button>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 3B: Firebase Storage Cloud Media Manager */}
+      {/* TAB 3: Firebase Storage Cloud Media Manager */}
       {activeTab === 'storage' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <div className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4">
             <div className="flex items-center gap-2">
               <Cloud className="w-5 h-5 text-[#B48A1E]" />
               <h2 className="font-display text-lg font-bold text-[#0A192F]">
-                Upload Media to Firebase Storage
+                Upload Course Media to Firebase Storage
               </h2>
             </div>
             <p className="text-xs text-slate-600 leading-relaxed">
-              Upload course video recordings (MP4/WebM), digital textbooks (PDF/EPUB), or product
-              cover images directly to your provisioned Firebase Storage bucket.
+              Upload course video recordings (MP4/WebM), public preview trailers, or course cover
+              images directly to your provisioned Firebase Storage bucket.
             </p>
 
             <div>
@@ -1094,7 +858,6 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   setCloudFolder(
                     e.target.value as
                       | 'protected/courses'
-                      | 'protected/books'
                       | 'public/covers'
                       | 'public/previews'
                   )
@@ -1102,9 +865,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
               >
                 <option value="protected/courses">protected/courses (Course Videos)</option>
-                <option value="protected/books">protected/books (Digital PDF / EPUB Books)</option>
                 <option value="public/previews">public/previews (Public Trailer Videos)</option>
-                <option value="public/covers">public/covers (Product Cover Artwork)</option>
+                <option value="public/covers">public/covers (Course Cover Artwork)</option>
               </select>
             </div>
 
@@ -1182,7 +944,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             {storageAssets.length === 0 ? (
               <p className="text-xs text-slate-500 py-8 text-center">
                 No files uploaded to Firebase Storage yet. Use the upload panel on the left or in
-                the Courses / Books tabs to upload videos, PDFs, or covers.
+                the Courses tab to upload lesson videos or cover artwork.
               </p>
             ) : (
               <div className="divide-y divide-slate-200 border border-slate-200 rounded-lg">
@@ -1253,7 +1015,7 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
           <div className="lg:col-span-7 bg-white border border-slate-200 rounded-xl p-6">
             <h2 className="font-display text-lg font-bold text-[#0A192F] mb-4">
-              Supported Technology & Book Categories
+              Supported Technology Course Tracks
             </h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {categories.map((cat) => (
@@ -1285,8 +1047,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   name: catName.trim(),
                   slug,
                   description:
-                    catDesc.trim() || `Courses and books covering ${catName.trim()}.`,
-                  group: catGroup,
+                    catDesc.trim() || `Online courses covering ${catName.trim()}.`,
+                  group: 'technology',
                   active: true,
                 },
                 `Category "${catName.trim()}" added.`
@@ -1297,37 +1059,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
             className="lg:col-span-5 bg-white border border-slate-200 rounded-xl p-6 space-y-4"
           >
             <h3 className="font-display text-base font-bold text-[#0A192F]">
-              Add New Category
+              Add New Course Track
             </h3>
             <div>
               <label htmlFor="admin-cat-name" className="block text-xs font-semibold mb-1">
-                Category Name
+                Track Name
               </label>
               <input
                 id="admin-cat-name"
                 type="text"
                 value={catName}
                 onChange={(e) => setCatName(e.target.value)}
-                placeholder="e.g. Kubernetes, System Design, Moral Stories"
+                placeholder="e.g. Kubernetes, System Design, Machine Learning"
                 className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
               />
-            </div>
-            <div>
-              <label htmlFor="admin-cat-group" className="block text-xs font-semibold mb-1">
-                Category Group
-              </label>
-              <select
-                id="admin-cat-group"
-                value={catGroup}
-                onChange={(e) =>
-                  setCatGroup(e.target.value as 'technology' | 'books' | 'storybooks')
-                }
-                className="w-full px-3 py-2 text-xs border border-slate-300 rounded-lg"
-              >
-                <option value="technology">Technology</option>
-                <option value="books">Educational Books</option>
-                <option value="storybooks">Storybooks</option>
-              </select>
             </div>
             <div>
               <label htmlFor="admin-cat-desc" className="block text-xs font-semibold mb-1">
@@ -1351,20 +1096,20 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
         </div>
       )}
 
-      {/* TAB 5: Orders, Payments, Refunds & Physical Book Shipments */}
+      {/* TAB 5: Orders, Payments & Refunds */}
       {activeTab === 'orders' && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
           <div className="flex items-center gap-2">
-            <Truck className="w-5 h-5 text-[#B48A1E]" />
+            <ShieldCheck className="w-5 h-5 text-[#B48A1E]" />
             <h2 className="font-display text-lg font-bold text-[#0A192F]">
-              Order Fulfillment, Shipment Tracking & Payment Status
+              Course Enrollments & Payment Status
             </h2>
           </div>
 
           {adminOrders.length === 0 ? (
             <p className="text-sm text-slate-600 py-8 text-center">
-              No customer orders have been placed yet. Complete a test checkout to manage shipments
-              and payment statuses here.
+              No student enrollments have been completed yet. Verified online course orders will
+              appear here.
             </p>
           ) : (
             <div className="space-y-4">
@@ -1487,8 +1232,8 @@ export const AdminDashboardView: React.FC<AdminDashboardViewProps> = ({
                   id: 'banner-launch-offer',
                   title: bannerTitle.trim(),
                   subtitle: bannerSubtitle.trim(),
-                  ctaText: 'Explore Catalog',
-                  ctaLink: 'catalog',
+                  ctaText: 'Explore Courses',
+                  ctaLink: 'courses',
                   couponCode: bannerCoupon.trim().toUpperCase(),
                   discountPercent: Number(bannerDiscount) || 20,
                   active: true,
